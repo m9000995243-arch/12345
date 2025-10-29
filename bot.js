@@ -12,6 +12,9 @@ const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
 const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
 
+// ===== ХРАНИЛИЩЕ АКТИВНЫХ ЗАПРОСОВ =====
+const activeRequests = new Map(); // userId -> {userName, chatId, history}
+
 // ===== ИНФОРМАЦИЯ О БРЕНДЕ =====
 const BRAND_INFO = {
   name: "Mortem Vellum",
@@ -24,224 +27,200 @@ const BRAND_INFO = {
   returnPolicy: "возврат за наш счет при нашей ошибке"
 };
 
-// Создаём клавиатуру с кнопкой
-const keyboard = Markup.keyboard([
+// Клавиатура для пользователя
+const userKeyboard = Markup.keyboard([
   ['👨‍💼 Позвать сотрудника']
 ]).resize();
 
-// ===== УМНЫЕ ОТВЕТЫ БЕЗ НЕЙРОСЕТИ =====
+// Клавиатура для админа (тебя)
+const adminKeyboard = Markup.keyboard([
+  ['✅ Ответить клиенту', '❌ Завершить диалог'],
+  ['📞 Позвонить клиенту', '📋 История запросов']
+]).resize();
+
+// ===== УМНЫЕ ОТВЕТЫ =====
 function getSmartResponse(question) {
   const lowerQuestion = question.toLowerCase();
   
-  // Приветствие
   if (lowerQuestion.includes('привет') || lowerQuestion.includes('здравств')) {
     return `Привет! Я помощник бренда ${BRAND_INFO.name}. Чем могу помочь?`;
   }
   
-  // Доставка
   if (lowerQuestion.includes('достав') || lowerQuestion.includes('срок') || lowerQuestion.includes('получ')) {
     return `🚚 ${BRAND_INFO.delivery}\n\nМы отправляем заказы в течение 1-2 рабочих дней после оплаты.`;
   }
   
-  // Оплата
-  if (lowerQuestion.includes('оплат') || lowerQuestion.includes('цена') || lowerQuestion.includes('стоим') || lowerQuestion.includes('куп')) {
-    return `💳 ${BRAND_INFO.payment}\n\nЦены от 1500 до 5000 рублей в зависимости от модели и сложности принта.`;
+  if (lowerQuestion.includes('оплат') || lowerQuestion.includes('цена') || lowerQuestion.includes('стоим')) {
+    return `💳 ${BRAND_INFO.payment}\n\nЦены от 1500 до 5000 рублей в зависимости от модели.`;
   }
   
-  // Гарантия и возврат
-  if (lowerQuestion.includes('гарант') || lowerQuestion.includes('возврат') || lowerQuestion.includes('брак')) {
-    return `🛡️ ${BRAND_INFO.warranty}\n\n${BRAND_INFO.returnPolicy}\n\nЕсли товар пришел с дефектом - свяжитесь с нами!`;
+  if (lowerQuestion.includes('гарант') || lowerQuestion.includes('возврат')) {
+    return `🛡️ ${BRAND_INFO.warranty}\n\n${BRAND_INFO.returnPolicy}`;
   }
   
-  // Производство
-  if (lowerQuestion.includes('производств') || lowerQuestion.includes('сдела') || lowerQuestion.includes('качеств') || lowerQuestion.includes('материал')) {
-    return `🎨 ${BRAND_INFO.production}\n\nКаждая вещь создается вручную с вниманием к деталям. Используем качественные материалы.`;
+  if (lowerQuestion.includes('производств') || lowerQuestion.includes('качеств')) {
+    return `🎨 ${BRAND_INFO.production}\n\nКаждая вещь создается вручную с вниманием к деталям.`;
   }
   
-  // Контакты
-  if (lowerQuestion.includes('контакт') || lowerQuestion.includes('телефон') || lowerQuestion.includes('связаться') || lowerQuestion.includes('номер')) {
-    return `📞 ${BRAND_INFO.phone}\n\nЗвоните или пишите в WhatsApp/Telegram по этому номеру.`;
+  if (lowerQuestion.includes('контакт') || lowerQuestion.includes('телефон')) {
+    return `📞 ${BRAND_INFO.phone}\n\nЗвоните или пишите в WhatsApp/Telegram.`;
   }
   
-  // О бренде
-  if (lowerQuestion.includes('бренд') || lowerQuestion.includes('марка') || lowerQuestion.includes('компания') || lowerQuestion.includes('mortem') || lowerQuestion.includes('vellum')) {
-    return `🎭 ${BRAND_INFO.name} - это ${BRAND_INFO.description}.\n\nМы создаем одежду, которая рассказывает историю и выражает индивидуальность.`;
+  if (lowerQuestion.includes('бренд') || lowerQuestion.includes('mortem')) {
+    return `🎭 ${BRAND_INFO.name} - это ${BRAND_INFO.description}.`;
   }
   
-  // Коллекция/товары
-  if (lowerQuestion.includes('коллекц') || lowerQuestion.includes('товар') || lowerQuestion.includes('одежд') || lowerQuestion.includes('футбол') || lowerQuestion.includes('худи') || lowerQuestion.includes('свитшот')) {
-    return `👕 У нас есть худи, футболки и свитшоты с уникальными принтами.\n\nКаждая модель выпускается ограниченным тиражом. Подробности уточняйте у сотрудника.`;
+  if (lowerQuestion.includes('коллекц') || lowerQuestion.includes('одежд')) {
+    return `👕 У нас есть худи, футболки и свитшоты с уникальными принтами.`;
   }
   
-  // Размеры
-  if (lowerQuestion.includes('размер') || lowerQuestion.includes('мерк') || lowerQuestion.includes('s') || lowerQuestion.includes('m') || lowerQuestion.includes('l') || lowerQuestion.includes('xl')) {
-    return `📏 Есть размеры от S до XL.\n\nРекомендуем ориентироваться на ваши стандартные размеры. Если сомневаетесь - можем помочь с выбором.`;
+  if (lowerQuestion.includes('размер')) {
+    return `📏 Есть размеры от S до XL. Рекомендуем ориентироваться на ваши стандартные размеры.`;
   }
   
-  // Стандартный ответ для неизвестных вопросов
-  return `Расскажите подробнее о вашем вопросе. Или можете:\n• Узнать о доставке\n• Уточнить условия оплаты  \n• Получить консультацию по размерам\n• Нажать кнопку ниже для связи с сотрудником`;
+  return `Расскажите подробнее о вашем вопросе. Или нажмите кнопку для связи с сотрудником 👇`;
 }
-
-// ===== ФУНКЦИЯ ДЛЯ НЕЙРОСЕТИ (РЕЗЕРВНАЯ) =====
-async function askAI(question) {
-  try {
-    // Сначала пробуем умные ответы
-    const smartResponse = getSmartResponse(question);
-    if (!smartResponse.includes('Расскажите подробнее')) {
-      return smartResponse;
-    }
-    
-    // Если не нашли умный ответ, пробуем нейросеть
-    if (!HUGGING_FACE_TOKEN) {
-      return "В настоящее время я могу ответить на вопросы о доставке, оплате, размерах и гарантии. Для других вопросов нажмите 'Позвать сотрудника'.";
-    }
-    
-    const API_URL = "https://api-inference.huggingface.co/models/microsoft/DialoGPT-medium";
-    const headers = { 
-      "Authorization": `Bearer ${HUGGING_FACE_TOKEN}` 
-    };
-
-    const context = `Ты помощник бренда одежды. Отвечай кратко и по делу.
-    
-Вопрос: ${question}
-Ответ:`;
-    
-    const payload = {
-      "inputs": context,
-      "parameters": {
-        "max_length": 150,
-        "temperature": 0.7
-      }
-    };
-    
-    const response = await axios.post(API_URL, payload, { headers, timeout: 10000 });
-    
-    if (response.status === 200 && response.data && response.data[0]?.generated_text) {
-      return response.data[0].generated_text.slice(0, 300);
-    }
-    
-    return getSmartResponse(question);
-    
-  } catch (error) {
-    console.log('Ошибка AI, используем умные ответы:', error.message);
-    return getSmartResponse(question);
-  }
-}
-
-// ===== ХРАНИЛИЩЕ ИСТОРИИ ЧАТОВ =====
-const userHistory = new Map();
 
 // ===== КОМАНДА /start =====
 bot.start((ctx) => {
   const userId = ctx.from.id;
-  userHistory.set(userId, []);
   
   ctx.reply(
-    `Привет! Я помощник бренда ${BRAND_INFO.name}. 🎭\n\nМогу помочь с:\n• Доставкой и сроками\n• Оплатой и ценами\n• Размерами и выбором\n• Гарантией и возвратом\n\nЗадайте вопрос или нажмите кнопку для связи с сотрудником 👇`,
-    keyboard
+    `Привет! Я помощник бренда ${BRAND_INFO.name}. 🎭\n\nМогу помочь с доставкой, оплатой, размерами и другими вопросами.\n\nЗадайте вопрос или нажмите кнопку для связи с сотрудником 👇`,
+    userKeyboard
   );
 });
 
-// ===== ОБРАБОТКА СООБЩЕНИЙ =====
+// ===== КОМАНДЫ ДЛЯ АДМИНА =====
+bot.command('admin', (ctx) => {
+  if (ctx.from.id.toString() !== ADMIN_CHAT_ID) {
+    return ctx.reply('Эта команда только для администратора.');
+  }
+  
+  const activeCount = activeRequests.size;
+  ctx.reply(
+    `👨‍💼 Панель администратора\n\nАктивные запросы: ${activeCount}\n\nИспользуйте кнопки ниже для управления:`,
+    adminKeyboard
+  );
+});
+
+// ===== ОБРАБОТКА СООБЩЕНИЙ ОТ ПОЛЬЗОВАТЕЛЕЙ =====
 bot.on('text', async (ctx) => {
   const userText = ctx.message.text;
   const userId = ctx.from.id;
   const userName = ctx.from.first_name || 'Пользователь';
+  const chatId = ctx.chat.id;
 
-  // Если пользователь нажал кнопку "Позвать сотрудника"
-  if (userText === '👨‍💼 Позвать сотрудника') {
-    const history = userHistory.get(userId) || [];
+  // Если это админ и есть активный диалог
+  if (userId.toString() === ADMIN_CHAT_ID && userText.startsWith('/answer_')) {
+    const targetUserId = userText.split('_')[1];
+    const message = userText.split('_').slice(2).join('_');
     
-    let historyText = "Нет истории чата";
-    if (history.length > 0) {
-      historyText = history.slice(-3).map((chat, index) => 
-        `💬 ${index + 1}. В: ${chat.question}\n💡 О: ${chat.answer}`
-      ).join('\n\n');
-    }
-    
-    const adminMessage = 
-`🔔 СОТРУДНИКА ЗОВУТ!
-
-👤 Пользователь: ${userName}
-🆔 ID: ${userId}
-
-📋 История чата:
-${historyText}
-
-✉️ Последнее сообщение: "${userText}"`;
-
-    try {
-      await bot.telegram.sendMessage(ADMIN_CHAT_ID, adminMessage);
-      await ctx.reply('✅ Сотрудник уже свяжется с вами! Ожидайте, пожалуйста.', keyboard);
-      userHistory.set(userId, []);
-    } catch (error) {
-      await ctx.reply('📞 Позвоните нам: ' + BRAND_INFO.phone, keyboard);
+    if (activeRequests.has(targetUserId)) {
+      try {
+        await bot.telegram.sendMessage(targetUserId, `👨‍💼 Ответ от сотрудника:\n\n${message}`, userKeyboard);
+        await ctx.reply(`✅ Ответ отправлен пользователю`, adminKeyboard);
+      } catch (error) {
+        await ctx.reply('❌ Не удалось отправить сообщение. Пользователь, возможно, заблокировал бота.', adminKeyboard);
+      }
     }
     return;
   }
 
+  // Если админ отвечает через кнопку
+  if (userId.toString() === ADMIN_CHAT_ID && activeRequests.size > 0) {
+    if (userText === '📋 История запросов') {
+      let requestsList = '📋 Активные запросы:\n\n';
+      activeRequests.forEach((request, id) => {
+        requestsList += `👤 ${request.userName} (ID: ${id})\n`;
+        requestsList += `💬 История: ${request.history.length} сообщений\n`;
+        requestsList += `⏰ Время: ${new Date().toLocaleTimeString()}\n`;
+        requestsList += `📝 Ответить: /answer_${id}_ваш_текст\n\n`;
+      });
+      await ctx.reply(requestsList, adminKeyboard);
+      return;
+    }
+    
+    if (userText === '❌ Завершить диалог') {
+      // Здесь можно добавить логику завершения диалогов
+      await ctx.reply('Выберите пользователя для завершения диалога:', adminKeyboard);
+      return;
+    }
+    
+    // Если админ пишет обычное сообщение без специальной команды
+    if (!['✅ Ответить клиенту', '❌ Завершить диалог', '📞 Позвонить клиенту', '📋 История запросов'].includes(userText)) {
+      await ctx.reply('Используйте кнопки ниже для управления запросами.', adminKeyboard);
+    }
+    return;
+  }
+
+  // Если пользователь нажал "Позвать сотрудника"
+  if (userText === '👨‍💼 Позвать сотрудника') {
+    // Сохраняем запрос
+    if (!activeRequests.has(userId.toString())) {
+      activeRequests.set(userId.toString(), {
+        userName: userName,
+        chatId: chatId,
+        history: [],
+        timestamp: Date.now()
+      });
+    }
+
+    const request = activeRequests.get(userId.toString());
+    
+    // Отправляем уведомление админу
+    const adminMessage = 
+`🔔 НОВЫЙ ЗАПРОС ОТ КЛИЕНТА!
+
+👤 Имя: ${userName}
+🆔 ID: ${userId}
+💬 Chat ID: ${chatId}
+⏰ Время: ${new Date().toLocaleString('ru-RU')}
+
+📝 Чтобы ответить, используйте:
+/answer_${userId}_ваш_текст
+
+Или нажмите "📋 История запросов" для просмотра всех активных запросов.`;
+
+    try {
+      await bot.telegram.sendMessage(ADMIN_CHAT_ID, adminMessage, adminKeyboard);
+      await ctx.reply('✅ Сотрудник уже уведомлен! Он свяжется с вами в этом чате в ближайшее время.', userKeyboard);
+    } catch (error) {
+      await ctx.reply('📞 Позвоните нам: ' + BRAND_INFO.phone, userKeyboard);
+    }
+    return;
+  }
+
+  // Обычные сообщения от пользователей
   try {
-    const aiResponse = await askAI(userText);
+    const response = getSmartResponse(userText);
+    await ctx.reply(response, userKeyboard);
     
-    if (!userHistory.has(userId)) {
-      userHistory.set(userId, []);
+    // Сохраняем в историю если есть активный запрос
+    if (activeRequests.has(userId.toString())) {
+      const request = activeRequests.get(userId.toString());
+      request.history.push({
+        question: userText,
+        answer: response,
+        timestamp: Date.now()
+      });
     }
     
-    const history = userHistory.get(userId);
-    history.push({
-      question: userText,
-      answer: aiResponse
-    });
-    
-    if (history.length > 5) {
-      history.shift();
-    }
-    
-    await ctx.reply(aiResponse, keyboard);
   } catch (error) {
-    await ctx.reply('📞 Для связи с сотрудником позвоните по номеру: ' + BRAND_INFO.phone, keyboard);
+    await ctx.reply('📞 Для связи с сотрудником нажмите кнопку ниже или позвоните: ' + BRAND_INFO.phone, userKeyboard);
   }
 });
 
 // ===== ЗАПУСК БОТА =====
 bot.launch().then(() => {
-  console.log('🤖 Бот запущен и работает!');
+  console.log('🤖 Бот запущен!');
+  console.log('👨‍💼 Команда для админ-панели: /admin');
 }).catch((error) => {
-  console.log('❌ Ошибка запуска бота:', error.message);
+  console.log('❌ Ошибка:', error.message);
 });
 
-// ===== EXPRESS СЕРВЕР =====
 app.get('/', (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Mortem Vellum Support Bot</title>
-        <style>
-            body { 
-                font-family: Arial, sans-serif; 
-                text-align: center; 
-                padding: 50px; 
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-            }
-            .container {
-                background: rgba(255,255,255,0.1);
-                padding: 30px;
-                border-radius: 15px;
-                backdrop-filter: blur(10px);
-            }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>✅ Mortem Vellum Support Bot</h1>
-            <p>🤖 Бот работает стабильно</p>
-            <p>🎭 Концептуальная одежда с историей</p>
-        </div>
-    </body>
-    </html>
-  `);
+  res.send('✅ Бот работает!');
 });
 
 app.listen(PORT, () => {
