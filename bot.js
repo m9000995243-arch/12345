@@ -135,7 +135,7 @@ bot.on('text', async (ctx) => {
         requestsList += `👤 ${request.userName} (ID: ${id})\n`;
         requestsList += `💬 История: ${request.history.length} сообщений\n`;
         requestsList += `⏰ Время: ${new Date().toLocaleTimeString()}\n`;
-        requestsList += `📝 Ответить: /answer_${id}_ваш_текст\n\n`;
+        requestsList += `📝 Ответить: `/answer_${id}_ваш_текст\n\n``;
       });
       await ctx.reply(requestsList, adminKeyboard);
       return;
@@ -178,7 +178,7 @@ bot.on('text', async (ctx) => {
 ⏰ Время: ${new Date().toLocaleString('ru-RU')}
 
 📝 Чтобы ответить, используйте:
-/answer_${userId}_ваш_текст
+`/answer_${userId}_ваш_текст`
 
 Или нажмите "📋 История запросов" для просмотра всех активных запросов.`;
 
@@ -226,3 +226,4 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Сервер на порту ${PORT}`);
 });
+
