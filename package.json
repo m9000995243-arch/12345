@@ -1,3 +1,25 @@
-"scripts": {
-  "start": "node bot.js"
+{
+  "name": "telegram-support-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot with AI support for conceptual clothing brand",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "telegraf": "^4.16.3",
+    "axios": "^1.6.2",
+    "express": "^4.18.2"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "ai",
+    "support"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0"
+  }
 }
