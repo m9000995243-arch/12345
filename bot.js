@@ -8,11 +8,23 @@ const PORT = process.env.PORT || 3000;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
+console.log('🔄 Запуск бота...');
+
+// Проверяем токен
+if (!TELEGRAM_BOT_TOKEN) {
+    console.log('❌ ОШИБКА: TELEGRAM_BOT_TOKEN не установлен');
+    process.exit(1);
+}
+
+if (!ADMIN_CHAT_ID) {
+    console.log('❌ ОШИБКА: ADMIN_CHAT_ID не установлен');
+    process.exit(1);
+}
+
 const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
 
-// ===== ХРАНИЛИЩЕ =====
-let waitingClients = []; // [{id, name, username}]
-let adminInDialog = null; // {clientId, clientName}
+// ===== ПРОСТОЕ ХРАНИЛИЩЕ =====
+let waitingClients = [];
 
 // ===== КЛАВИАТУРЫ =====
 const userKeyboard = Markup.keyboard([
@@ -23,35 +35,36 @@ const userKeyboard = Markup.keyboard([
 
 const adminKeyboard = Markup.keyboard([
     ['📋 Список клиентов'],
-    ['💬 Ответить клиенту'],
+    ['💬 Ответить клиенту'], 
     ['❌ Завершить диалог']
 ]).resize();
 
-const adminDialogKeyboard = Markup.keyboard([
-    ['🏠 Выйти из диалога']
-]).resize();
-
-// ===== ТЕКСТ ДЛЯ КНОПОК =====
-const DELIVERY_TEXT = "🚚 Информация о доставке...";
-const RETURN_TEXT = "🔄 Условия возврата...";
-const CATALOG_TEXT = "📦 Наш каталог...";
-const ABOUT_TEXT = "🏢 О нашем бренде...";
-
 // ===== ДЛЯ ПОЛЬЗОВАТЕЛЕЙ =====
 bot.start((ctx) => {
+    console.log('✅ Получен /start');
     ctx.reply("👋 Добро пожаловать! Выберите раздел:", userKeyboard);
 });
 
-bot.hears('🚚 Доставка', (ctx) => ctx.reply(DELIVERY_TEXT, userKeyboard));
-bot.hears('🔄 Возврат', (ctx) => ctx.reply(RETURN_TEXT, userKeyboard));
-bot.hears('📦 Каталог', (ctx) => ctx.reply(CATALOG_TEXT, userKeyboard));
-bot.hears('🏢 О бренде', (ctx) => ctx.reply(ABOUT_TEXT, userKeyboard));
+bot.hears('🚚 Доставка', (ctx) => {
+    ctx.reply("🚚 Информация о доставке...", userKeyboard);
+});
+
+bot.hears('🔄 Возврат', (ctx) => {
+    ctx.reply("🔄 Условия возврата...", userKeyboard);
+});
+
+bot.hears('📦 Каталог', (ctx) => {
+    ctx.reply("📦 Наш каталог...", userKeyboard);
+});
+
+bot.hears('🏢 О бренде', (ctx) => {
+    ctx.reply("🏢 О нашем бренде...", userKeyboard);
+});
 
 bot.hears('📞 Обратная связь', async (ctx) => {
     const user = {
         id: ctx.from.id,
-        name: ctx.from.first_name || 'Клиент',
-        username: ctx.from.username ? `@${ctx.from.username}` : 'нет username'
+        name: ctx.from.first_name || 'Клиент'
     };
 
     // Добавляем в список ожидания
@@ -59,53 +72,32 @@ bot.hears('📞 Обратная связь', async (ctx) => {
         waitingClients.push(user);
     }
 
+    console.log('📨 Новый запрос от:', user.name);
+    
     // Уведомляем админа
-    const adminMsg = `🔔 Новый клиент:\n${user.name} (${user.username})`;
+    const adminMsg = `🔔 Новый клиент: ${user.name} (ID: ${user.id})`;
     await bot.telegram.sendMessage(ADMIN_CHAT_ID, adminMsg, adminKeyboard);
     
     ctx.reply("✅ Запрос отправлен! Ожидайте ответа.", userKeyboard);
 });
 
-// Сообщения от клиентов пересылаем админу
-bot.on('text', async (ctx) => {
-    if (ctx.from.id.toString() === ADMIN_CHAT_ID) return;
-    
-    const userText = ctx.message.text;
-    const userId = ctx.from.id;
-    const userName = ctx.from.first_name || 'Клиент';
-    
-    // Если это не кнопка главного меню
-    if (!['🚚 Доставка', '🔄 Возврат', '📦 Каталог', '🏢 О бренде', '📞 Обратная связь'].includes(userText)) {
-        
-        // Если админ в диалоге с этим клиентом
-        if (adminInDialog && adminInDialog.clientId === userId) {
-            await bot.telegram.sendMessage(ADMIN_CHAT_ID, `👤 ${userName}: ${userText}`, adminDialogKeyboard);
-        } 
-        // Если клиент в списке ожидания
-        else if (waitingClients.find(c => c.id === userId)) {
-            await bot.telegram.sendMessage(ADMIN_CHAT_ID, `📨 ${userName}: ${userText}\n\nНажмите '💬 Ответить клиенту'`, adminKeyboard);
-        }
-    }
-});
-
 // ===== ДЛЯ АДМИНА =====
+let currentDialog = null;
+
 bot.command('admin', (ctx) => {
     if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
-    showAdminPanel(ctx);
-});
-
-function showAdminPanel(ctx) {
+    
     let message = `👨‍💼 Админ-панель\n`;
     message += `⏳ Клиентов: ${waitingClients.length}\n`;
     
-    if (adminInDialog) {
-        message += `💬 В диалоге с: ${adminInDialog.clientName}\n`;
+    if (currentDialog) {
+        message += `💬 В диалоге с: ${currentDialog.name}\n`;
     }
     
     ctx.reply(message, adminKeyboard);
-}
+});
 
-// ОБРАБОТКА КНОПОК АДМИНА
+// Кнопка "Список клиентов"
 bot.hears('📋 Список клиентов', (ctx) => {
     if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
     
@@ -116,12 +108,13 @@ bot.hears('📋 Список клиентов', (ctx) => {
     
     let message = "📋 Клиенты:\n";
     waitingClients.forEach((client, index) => {
-        message += `${index + 1}. ${client.name} (${client.username})\n`;
+        message += `${index + 1}. ${client.name} (ID: ${client.id})\n`;
     });
     
     ctx.reply(message, adminKeyboard);
 });
 
+// Кнопка "Ответить клиенту" 
 bot.hears('💬 Ответить клиенту', async (ctx) => {
     if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
     
@@ -130,109 +123,74 @@ bot.hears('💬 Ответить клиенту', async (ctx) => {
         return;
     }
     
-    // Если всего один клиент - сразу начинаем диалог
-    if (waitingClients.length === 1) {
-        const client = waitingClients[0];
-        adminInDialog = {
-            clientId: client.id,
-            clientName: client.name
-        };
-        
-        // Удаляем из списка ожидания
-        waitingClients = waitingClients.filter(c => c.id !== client.id);
-        
-        await ctx.reply(`💬 Диалог с ${client.name}\nПишите сообщения - они отправятся клиенту.`, adminDialogKeyboard);
-        
-        // Уведомляем клиента
-        await bot.telegram.sendMessage(client.id, "👨‍💼 Сотрудник на связи! Можете задавать вопросы.", userKeyboard);
-        
-    } else {
-        // Если несколько клиентов - показываем список
-        let message = "Выберите клиента:\n";
-        waitingClients.forEach((client, index) => {
-            message += `\n${index + 1}. ${client.name}`;
-        });
-        message += "\n\nНапишите номер клиента:";
-        
-        ctx.reply(message, Markup.keyboard([['↩️ Назад']]).resize());
-    }
+    // Берем первого клиента из списка
+    const client = waitingClients[0];
+    currentDialog = client;
+    
+    // Удаляем из списка ожидания
+    waitingClients = waitingClients.filter(c => c.id !== client.id);
+    
+    await ctx.reply(`💬 Диалог с ${client.name}\nТеперь все ваши сообщения будут отправляться клиенту.`, adminKeyboard);
+    
+    // Уведомляем клиента
+    await bot.telegram.sendMessage(client.id, "👨‍💼 Сотрудник на связи! Можете задавать вопросы.", userKeyboard);
 });
 
-bot.hears('❌ Завершить диалог', async (ctx) => {
+// Кнопка "Завершить диалог"
+bot.hears('❌ Запершить диалог', async (ctx) => {
     if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
     
-    if (!adminInDialog) {
+    if (!currentDialog) {
         ctx.reply("❌ Не в диалоге", adminKeyboard);
         return;
     }
     
-    const clientName = adminInDialog.clientName;
+    const clientName = currentDialog.name;
+    currentDialog = null;
     
-    // Уведомляем клиента
-    try {
-        await bot.telegram.sendMessage(adminInDialog.clientId, "💬 Диалог завершен. Если нужна помощь - нажмите '📞 Обратная связь'", userKeyboard);
-    } catch (error) {}
-    
-    adminInDialog = null;
     ctx.reply(`✅ Диалог с ${clientName} завершен`, adminKeyboard);
 });
 
-bot.hears('🏠 Выйти из диалога', (ctx) => {
-    if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
-    
-    if (!adminInDialog) {
-        ctx.reply("❌ Не в диалоге", adminKeyboard);
+// Пересылка сообщений от клиентов админу
+bot.on('text', async (ctx) => {
+    // Пропускаем сообщения админа
+    if (ctx.from.id.toString() === ADMIN_CHAT_ID) {
+        // Если админ пишет сообщение и есть активный диалог - отправляем клиенту
+        if (currentDialog && !['📋 Список клиентов', '💬 Ответить клиенту', '❌ Завершить диалог'].includes(ctx.message.text)) {
+            try {
+                await bot.telegram.sendMessage(currentDialog.id, `👨‍💼 Сотрудник: ${ctx.message.text}`, userKeyboard);
+                ctx.reply("✅ Сообщение отправлено");
+            } catch (error) {
+                ctx.reply("❌ Ошибка отправки");
+                currentDialog = null;
+            }
+        }
         return;
     }
     
-    adminInDialog = null;
-    ctx.reply("✅ Вы вышли из диалога", adminKeyboard);
-});
-
-bot.hears('↩️ Назад', (ctx) => {
-    if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
-    showAdminPanel(ctx);
-});
-
-// Обработка выбора клиента по номеру
-bot.on('text', async (ctx) => {
-    if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
-    
-    const text = ctx.message.text;
-    const number = parseInt(text);
-    
-    // Если ввели число и есть клиенты
-    if (!isNaN(number) && number >= 1 && number <= waitingClients.length) {
-        const client = waitingClients[number - 1];
-        adminInDialog = {
-            clientId: client.id,
-            clientName: client.name
-        };
-        
-        // Удаляем из списка ожидания
-        waitingClients = waitingClients.filter(c => c.id !== client.id);
-        
-        await ctx.reply(`💬 Диалог с ${client.name}\nПишите сообщения - они отправятся клиенту.`, adminDialogKeyboard);
-        
-        // Уведомляем клиента
-        await bot.telegram.sendMessage(client.id, "👨‍💼 Сотрудник на связи! Можете задавать вопросы.", userKeyboard);
-    }
-    // Если админ пишет сообщение и в диалоге - отправляем клиенту
-    else if (adminInDialog && !['📋 Список клиентов', '💬 Ответить клиенту', '❌ Завершить диалог', '🏠 Выйти из диалога', '↩️ Назад'].includes(text)) {
-        try {
-            await bot.telegram.sendMessage(adminInDialog.clientId, `👨‍💼 Сотрудник: ${text}`, userKeyboard);
-            ctx.reply("✅ Отправлено", adminDialogKeyboard);
-        } catch (error) {
-            ctx.reply("❌ Ошибка отправки", adminKeyboard);
-            adminInDialog = null;
-        }
+    // Пересылаем сообщения от клиентов админу
+    const userText = ctx.message.text;
+    if (!['🚚 Доставка', '🔄 Возврат', '📦 Каталог', '🏢 О бренде', '📞 Обратная связь'].includes(userText)) {
+        const userName = ctx.from.first_name || 'Клиент';
+        await bot.telegram.sendMessage(ADMIN_CHAT_ID, `📨 ${userName}: ${userText}`, adminKeyboard);
     }
 });
 
 // ===== ЗАПУСК =====
 bot.launch().then(() => {
-    console.log('🤖 Бот запущен!');
-}).catch(console.error);
+    console.log('🤖 Бот успешно запущен!');
+}).catch((error) => {
+    console.log('❌ Ошибка запуска бота:', error.message);
+    process.exit(1);
+});
 
-app.get('/', (req, res) => res.send('✅ Бот работает'));
-app.listen(PORT, () => console.log(`🚀 Сервер на порту ${PORT}`));
+// Express сервер для Render
+app.get('/', (req, res) => {
+    res.send('✅ Бот работает!');
+});
+
+app.listen(PORT, () => {
+    console.log(`🚀 Сервер запущен на порту ${PORT}`);
+});
+
+console.log('✅ Код загружен, запускаем бота...');
