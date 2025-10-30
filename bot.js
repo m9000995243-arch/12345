@@ -1,295 +1,123 @@
-import logging
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import (
-    Updater,
-    CommandHandler,
-    CallbackQueryHandler,
-    MessageHandler,
-    Filters,
-    CallbackContext,
-)
+import asyncio
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-# Включите логирование
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+# Замените на ваш токен бота
+TOKEN = "YOUR_BOT_TOKEN"
+# Замените на ваш Telegram ID (ID администратора)
+ADMIN_ID = 123456789
 
-# --- КОНФИГУРАЦИЯ ---
-BOT_TOKEN = "ВАШ_ТОКЕН_БОТА"  # Вставьте сюда ваш токен бота
-ADMIN_CHAT_ID = "ВАШ_TELEGRAM_ID"  # Вставьте сюда ID администратора
+# Глобальные переменные для управления состоянием
+pending_users = set()  # Множество ID пользователей, ожидающих обратной связи
+current_dialog = None  # ID пользователя, с которым админ сейчас общается
 
-# --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
-# Словарь для хранения активных диалогов с покупателями
-# Формат: {user_id: {'username': 'имя_пользователя', 'chat_id': chat_id_покупателя}}
-active_dialogues = {}
+# Словарь с текстами для категорий (замените на ваши тексты)
+texts = {
+    'доставка': 'Здесь будет текст о доставке.',  # ВПИШИТЕ СВОЙ ТЕКСТ ЗДЕСЬ
+    'возврат': 'Здесь будет текст о возврате.',  # ВПИШИТЕ СВОЙ ТЕКСТ ЗДЕСЬ
+    'каталог': 'Здесь будет ссылка на каталог или текст.',  # ВПИШИТЕ СВОЙ ТЕКСТ ЗДЕСЬ
+    'о бренде': 'Здесь будет текст о бренде.',  # ВПИШИТЕ СВОЙ ТЕКСТ ЗДЕСЬ
+}
 
-# --- ОСНОВНЫЕ ФУНКЦИИ ---
-
-def start(update: Update, context: CallbackContext) -> None:
-    """Отправляет главное меню при команде /start."""
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /start для пользователей."""
     keyboard = [
-        [
-            InlineKeyboardButton("Доставка", callback_data="delivery"),
-            InlineKeyboardButton("Возврат", callback_data="return"),
-        ],
-        [
-            InlineKeyboardButton("Каталог", callback_data="catalog"),
-            InlineKeyboardButton("О бренде", callback_data="about_brand"),
-        ],
-        [InlineKeyboardButton("Обратная связь", callback_data="feedback")],
+        [KeyboardButton('доставка'), KeyboardButton('возврат')],
+        [KeyboardButton('каталог'), KeyboardButton('о бренде')],
+        [KeyboardButton('обратная связь')]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text('Добро пожаловать! Выберите интересующий вас раздел:', reply_markup=reply_markup)
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    await update.message.reply_text('Выберите категорию:', reply_markup=reply_markup)
 
-def button_callback(update: Update, context: CallbackContext) -> None:
-    """Обрабатывает нажатия на кнопки."""
-    query = update.callback_query
-    query.answer()  # Отвечаем на callback query, чтобы убрать "загрузку" на кнопке
+async def handle_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик нажатий на кнопки меню."""
+    text = update.message.text.lower()
+    if text in texts:
+        await update.message.reply_text(texts[text])
+    elif text == 'обратная связь':
+        user_id = update.effective_user.id
+        username = update.effective_user.username or f"ID: {user_id}"
+        pending_users.add(user_id)
+        # Уведомить админа о новом пользователе
+        await notify_admin(context)
 
-    data = query.data
-
-    if data == "delivery":
-        # --- ВСТАВЬТЕ ТЕКСТ ДЛЯ ДОСТАВКИ ЗДЕСЬ ---
-        text_to_send = "Здесь информация о доставке..."
-        # -----------------------------------------
-        query.edit_message_text(text=text_to_send)
-    elif data == "return":
-        # --- ВСТАВЬТЕ ТЕКСТ ДЛЯ ВОЗВРАТА ЗДЕСЬ ---
-        text_to_send = "Здесь информация о возврате..."
-        # -------------------------------------------
-        query.edit_message_text(text=text_to_send)
-    elif data == "catalog":
-        # --- ВСТАВЬТЕ ТЕКСТ ДЛЯ КАТАЛОГА ЗДЕСЬ ---
-        text_to_send = "Вот наш каталог: [ссылка на каталог]..."
-        # ------------------------------------------
-        query.edit_message_text(text=text_to_send)
-    elif data == "about_brand":
-        # --- ВСТАВЬТЕ ТЕКСТ О БРЕНДЕ ЗДЕСЬ ---
-        text_to_send = "Мы - [название бренда], мы..."
-        # ---------------------------------------
-        query.edit_message_text(text=text_to_send)
-    elif data == "feedback":
-        handle_feedback(query.message.chat_id, query.from_user)
-    elif data == "reply_to_client":
-        handle_reply_to_client(query.message.chat_id, context, query.from_user.id)
-    elif data == "end_dialog":
-        handle_end_dialog(query.message.chat_id, context, query.from_user.id)
-    elif data.startswith("select_dialog_"):
-        user_id_to_dialog = data.split("_")[2]
-        handle_select_dialog(query.message.chat_id, context, user_id_to_dialog)
-    elif data == "exit_dialog":
-        handle_exit_dialog(query.message.chat_id, context, query.from_user.id)
-
-def handle_feedback(chat_id: int, user) -> None:
-    """Обрабатывает обратную связь от пользователя."""
-    user_id = user.id
-    username = user.username if user.username else f"ID_{user_id}"
-
-    if user_id not in active_dialogues:
-        active_dialogues[user_id] = {'username': username, 'chat_id': chat_id}
-        logger.info(f"Новый запрос обратной связи от {username} (ID: {user_id})")
-
-        # Отправляем сообщение администратору
-        send_admin_notification(context, f"Поступил новый запрос обратной связи от: @{username}")
-
-        # Отправляем пользователю подтверждение
-        context.bot.send_message(
-            chat_id=chat_id,
-            text="Ваше сообщение получено. Скоро с вами свяжется наш специалист."
-        )
-    else:
-        context.bot.send_message(
-            chat_id=chat_id,
-            text="Мы уже обрабатываем ваш запрос. Пожалуйста, подождите."
-        )
-
-def send_admin_notification(context: CallbackContext, message_text: str) -> None:
-    """Отправляет уведомление администратору."""
+async def notify_admin(context: ContextTypes.DEFAULT_TYPE):
+    """Уведомляет админа о пользователях, ожидающих обратную связь."""
+    if not pending_users:
+        return
     keyboard = []
-    if active_dialogues:
-        for user_id, info in active_dialogues.items():
-            keyboard.append([InlineKeyboardButton(f"Диалог с @{info['username']}", callback_data=f"select_dialog_{user_id}")])
-        keyboard.append([InlineKeyboardButton("Выйти из диалога", callback_data="exit_dialog")]) # Кнопка для администратора
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        context.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=message_text,
-            reply_markup=reply_markup
-        )
-    else:
-        context.bot.send_message(
-            chat_id=ADMIN_CHAT_ID,
-            text=message_text
-        )
+    for user_id in pending_users:
+        button_text = f"Пользователь {user_id}"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"select_{user_id}")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await context.bot.send_message(chat_id=ADMIN_ID, text="Новые пользователи ждут обратной связи:", reply_markup=reply_markup)
 
-def handle_select_dialog(admin_chat_id: int, context: CallbackContext, user_id_to_dialog: str) -> None:
-    """Переводит администратора в режим диалога с выбранным пользователем."""
-    if user_id_to_dialog in active_dialogues:
-        target_user_info = active_dialogues[user_id_to_dialog]
-        target_user_chat_id = target_user_info['chat_id']
-        target_username = target_user_info['username']
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик inline-кнопок для админа."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    global current_dialog
 
-        # Отправляем администратору сообщение для начала диалога
-        keyboard_admin = [
-            [InlineKeyboardButton("Завершить диалог", callback_data="end_dialog")],
-            [InlineKeyboardButton("Выйти из диалога", callback_data="exit_dialog")]
+    if data.startswith('select_'):
+        user_id = int(data.split('_')[1])
+        current_dialog = user_id
+        pending_users.discard(user_id)
+        keyboard = [
+            [InlineKeyboardButton("Ответить клиенту", callback_data="respond")],
+            [InlineKeyboardButton("Выйти из диалога", callback_data="exit_dialog")],
+            [InlineKeyboardButton("Завершить диалог", callback_data="end_dialog")]
         ]
-        reply_markup_admin = InlineKeyboardMarkup(keyboard_admin)
-        context.bot.send_message(
-            chat_id=admin_chat_id,
-            text=f"Вы начали диалог с @{target_username}. Введите ваше сообщение ниже:",
-            reply_markup=reply_markup_admin
-        )
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(text=f"Диалог с пользователем {user_id}. Выберите действие:", reply_markup=reply_markup)
 
-        # Отправляем пользователю сообщение о том, что с ним связывается специалист
-        context.bot.send_message(
-            chat_id=target_user_chat_id,
-            text="С вами связался наш специалист. Пожалуйста, ожидайте."
-        )
+    elif data == 'respond':
+        await query.edit_message_text(text="Теперь вы можете отправлять сообщения пользователю. Они будут пересланы.")
 
-        # Устанавливаем флаг для режима диалога с этим пользователем
-        context.user_data['in_dialog_with'] = user_id_to_dialog
-        context.user_data['dialog_admin_chat_id'] = admin_chat_id
-    else:
-        context.bot.send_message(
-            chat_id=admin_chat_id,
-            text="Этот диалог уже завершен или неактивен."
-        )
+    elif data == 'exit_dialog':
+        current_dialog = None
+        await query.edit_message_text(text="Вы вышли из диалога. Можете выбрать другого пользователя.")
+        await notify_admin(context)
 
-def handle_reply_to_client(admin_chat_id: int, context: CallbackContext, admin_user_id: int) -> None:
-    """Переключает бота в режим ожидания ответа администратора."""
-    if 'in_dialog_with' in context.user_data and context.user_data['dialog_admin_chat_id'] == admin_chat_id:
-        context.bot.send_message(
-            chat_id=admin_chat_id,
-            text="Напишите ваш ответ клиенту:"
-        )
-        # Устанавливаем состояние для ожидания сообщения от администратора
-        context.user_data['awaiting_admin_reply'] = True
-    else:
-        context.bot.send_message(
-            chat_id=admin_chat_id,
-            text="Пожалуйста, сначала выберите диалог для ответа."
-        )
+    elif data == 'end_dialog':
+        user_id = current_dialog
+        current_dialog = None
+        pending_users.discard(user_id)
+        await query.edit_message_text(text="Диалог завершен. Пользователь удален из списка.")
+        await notify_admin(context)
 
-def admin_message_handler(update: Update, context: CallbackContext) -> None:
-    """Обрабатывает сообщения от администратора в режиме диалога."""
-    if update.message and update.message.chat_id == int(ADMIN_CHAT_ID):
-        if 'awaiting_admin_reply' in context.user_data and context.user_data['awaiting_admin_reply']:
-            # Отправляем сообщение клиенту
-            client_user_id = context.user_data['in_dialog_with']
-            client_chat_id = active_dialogues[client_user_id]['chat_id']
-            message_to_client = update.message.text
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик текстовых сообщений."""
+    user_id = update.effective_user.id
 
-            context.bot.send_message(
-                chat_id=client_chat_id,
-                text=f"Ответ специалиста: {message_to_client}"
-            )
-
-            # Отправляем администратору подтверждение и кнопки
-            keyboard_admin = [
-                [InlineKeyboardButton("Завершить диалог", callback_data="end_dialog")],
-                [InlineKeyboardButton("Выйти из диалога", callback_data="exit_dialog")]
-            ]
-            reply_markup_admin = InlineKeyboardMarkup(keyboard_admin)
-            context.bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text=f"Ваше сообщение отправлено клиенту @{active_dialogues[client_user_id]['username']}. Введите следующий ответ или завершите диалог:",
-                reply_markup=reply_markup_admin
-            )
-
-            # Сбрасываем состояние ожидания
-            context.user_data['awaiting_admin_reply'] = False
-        elif 'in_dialog_with' in context.user_data and context.user_data['dialog_admin_chat_id'] == update.message.chat_id:
-            # Если администратор написал что-то, когда не в режиме ожидания ответа
-            context.bot.send_message(
-                chat_id=ADMIN_CHAT_ID,
-                text="Чтобы ответить клиенту, нажмите кнопку 'Ответить клиенту'."
-            )
-
-
-def handle_end_dialog(admin_chat_id: int, context: CallbackContext, admin_user_id: int) -> None:
-    """Завершает диалог с пользователем."""
-    if 'in_dialog_with' in context.user_data and context.user_data['dialog_admin_chat_id'] == admin_chat_id:
-        user_id_to_end = context.user_data['in_dialog_with']
-
-        if user_id_to_end in active_dialogues:
-            client_chat_id = active_dialogues[user_id_to_end]['chat_id']
-            client_username = active_dialogues[user_id_to_end]['username']
-
-            context.bot.send_message(
-                chat_id=client_chat_id,
-                text="Спасибо за обращение! Если у вас возникнут новые вопросы, обращайтесь."
-            )
-            context.bot.send_message(
-                chat_id=admin_chat_id,
-                text=f"Диалог с @{client_username} завершен."
-            )
-
-            # Удаляем пользователя из активных диалогов
-            del active_dialogues[user_id_to_end]
-            logger.info(f"Диалог с {client_username} (ID: {user_id_to_end}) завершен администратором.")
-
-            # Сбрасываем состояние диалога у администратора
-            context.user_data.pop('in_dialog_with', None)
-            context.user_data.pop('dialog_admin_chat_id', None)
-            context.user_data.pop('awaiting_admin_reply', None)
-
-            # Обновляем уведомление для администратора
-            send_admin_notification(context, "Диалог завершен.")
+    if user_id == ADMIN_ID:
+        if current_dialog:
+            # Переслать сообщение админа пользователю
+            await context.bot.send_message(chat_id=current_dialog, text=update.message.text)
         else:
-            context.bot.send_message(
-                chat_id=admin_chat_id,
-                text="Этот диалог уже неактивен."
-            )
+            await update.message.reply_text("Вы не в диалоге с пользователем.")
+
+    elif user_id == current_dialog:
+        # Переслать сообщение пользователя админу
+        username = update.effective_user.username or f"ID: {user_id}"
+        text = f"Сообщение от {username}: {update.message.text}"
+        await context.bot.send_message(chat_id=ADMIN_ID, text=text)
     else:
-        context.bot.send_message(
-            chat_id=admin_chat_id,
-            text="Вы не находитесь в активном диалоге."
-        )
+        # Если пользователь не в диалоге, игнорировать или предупредить
+        await update.message.reply_text("Администратор сейчас занят. Попробуйте позже или нажмите 'обратная связь' снова.")
 
-def handle_exit_dialog(admin_chat_id: int, context: CallbackContext, admin_user_id: int) -> None:
-    """Выход из текущего диалога (если активен) или просто сброс состояния."""
-    if 'in_dialog_with' in context.user_data and context.user_data['dialog_admin_chat_id'] == admin_chat_id:
-        user_id_to_exit = context.user_data['in_dialog_with']
-        client_username = active_dialogues[user_id_to_exit]['username']
+def main():
+    """Главная функция."""
+    application = Application.builder().token(TOKEN).build()
 
-        context.bot.send_message(
-            chat_id=admin_chat_id,
-            text=f"Вы вышли из диалога с @{client_username}."
-        )
-        # Сбрасываем состояние диалога у администратора
-        context.user_data.pop('in_dialog_with', None)
-        context.user_data.pop('dialog_admin_chat_id', None)
-        context.user_data.pop('awaiting_admin_reply', None)
-
-        # Обновляем уведомление для администратора
-        send_admin_notification(context, f"Администратор вышел из диалога с @{client_username}.")
-    else:
-        context.bot.send_message(
-            chat_id=admin_chat_id,
-            text="Вы не находитесь в активном диалоге."
-        )
-
-def main() -> None:
-    """Запускает бота."""
-    updater = Updater(BOT_TOKEN)
-
-    dispatcher = updater.dispatcher
-
-    # Обработчики команд
-    dispatcher.add_handler(CommandHandler("start", start))
-
-    # Обработчик нажатий на inline кнопки
-    dispatcher.add_handler(CallbackQueryHandler(button_callback))
-
-    # Обработчик сообщений от администратора (для диалогов)
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, admin_message_handler))
+    # Добавляем обработчики
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_button))
+    application.add_handler(CallbackQueryHandler(handle_callback))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Запуск бота
-    updater.start_polling()
-    logger.info("Бот запущен.")
-    updater.idle()
+    application.run_polling()
 
 if __name__ == '__main__':
     main()
