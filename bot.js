@@ -1,406 +1,295 @@
-const { Telegraf, Markup } = require('telegraf');
-const express = require('express');
+import logging
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import (
+    Updater,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    Filters,
+    CallbackContext,
+)
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+# Включите логирование
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-// ===== НАСТРОЙКИ =====
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
+# --- КОНФИГУРАЦИЯ ---
+BOT_TOKEN = "ВАШ_ТОКЕН_БОТА"  # Вставьте сюда ваш токен бота
+ADMIN_CHAT_ID = "ВАШ_TELEGRAM_ID"  # Вставьте сюда ID администратора
 
-const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
+# --- ГЛОБАЛЬНЫЕ ПЕРЕМЕННЫЕ ---
+# Словарь для хранения активных диалогов с покупателями
+# Формат: {user_id: {'username': 'имя_пользователя', 'chat_id': chat_id_покупателя}}
+active_dialogues = {}
 
-// ===== ХРАНИЛИЩЕ =====
-const activeUsers = new Map(); // userId -> {userName, chatId, username}
-let adminState = { 
-    currentAction: null, 
-    selectedUser: null,
-    selectedUserName: null 
-};
+# --- ОСНОВНЫЕ ФУНКЦИИ ---
 
-// ===== КЛАВИАТУРЫ =====
-const mainKeyboard = Markup.keyboard([
-    ['🚚 Доставка', '🔄 Возврат'],
-    ['📦 Каталог', '🏢 О бренде'],
-    ['📞 Обратная связь']
-]).resize();
+def start(update: Update, context: CallbackContext) -> None:
+    """Отправляет главное меню при команде /start."""
+    keyboard = [
+        [
+            InlineKeyboardButton("Доставка", callback_data="delivery"),
+            InlineKeyboardButton("Возврат", callback_data="return"),
+        ],
+        [
+            InlineKeyboardButton("Каталог", callback_data="catalog"),
+            InlineKeyboardButton("О бренде", callback_data="about_brand"),
+        ],
+        [InlineKeyboardButton("Обратная связь", callback_data="feedback")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text('Добро пожаловать! Выберите интересующий вас раздел:', reply_markup=reply_markup)
 
-const adminMainKeyboard = Markup.keyboard([
-    ['📋 Список клиентов', '💬 Ответить клиенту'],
-    ['❌ Завершить диалог', '🚪 Выйти из диалога']
-]).resize();
+def button_callback(update: Update, context: CallbackContext) -> None:
+    """Обрабатывает нажатия на кнопки."""
+    query = update.callback_query
+    query.answer()  # Отвечаем на callback query, чтобы убрать "загрузку" на кнопке
 
-const adminDialogKeyboard = Markup.keyboard([
-    ['🚪 Завершить и выйти']
-]).resize();
+    data = query.data
 
-// ===== ТЕКСТ ДЛЯ КНОПОК (ЗАПОЛНИ ЭТО САМ) =====
+    if data == "delivery":
+        # --- ВСТАВЬТЕ ТЕКСТ ДЛЯ ДОСТАВКИ ЗДЕСЬ ---
+        text_to_send = "Здесь информация о доставке..."
+        # -----------------------------------------
+        query.edit_message_text(text=text_to_send)
+    elif data == "return":
+        # --- ВСТАВЬТЕ ТЕКСТ ДЛЯ ВОЗВРАТА ЗДЕСЬ ---
+        text_to_send = "Здесь информация о возврате..."
+        # -------------------------------------------
+        query.edit_message_text(text=text_to_send)
+    elif data == "catalog":
+        # --- ВСТАВЬТЕ ТЕКСТ ДЛЯ КАТАЛОГА ЗДЕСЬ ---
+        text_to_send = "Вот наш каталог: [ссылка на каталог]..."
+        # ------------------------------------------
+        query.edit_message_text(text=text_to_send)
+    elif data == "about_brand":
+        # --- ВСТАВЬТЕ ТЕКСТ О БРЕНДЕ ЗДЕСЬ ---
+        text_to_send = "Мы - [название бренда], мы..."
+        # ---------------------------------------
+        query.edit_message_text(text=text_to_send)
+    elif data == "feedback":
+        handle_feedback(query.message.chat_id, query.from_user)
+    elif data == "reply_to_client":
+        handle_reply_to_client(query.message.chat_id, context, query.from_user.id)
+    elif data == "end_dialog":
+        handle_end_dialog(query.message.chat_id, context, query.from_user.id)
+    elif data.startswith("select_dialog_"):
+        user_id_to_dialog = data.split("_")[2]
+        handle_select_dialog(query.message.chat_id, context, user_id_to_dialog)
+    elif data == "exit_dialog":
+        handle_exit_dialog(query.message.chat_id, context, query.from_user.id)
 
-const DELIVERY_TEXT = `
-🚚 ИНФОРМАЦИЯ О ДОСТАВКЕ
+def handle_feedback(chat_id: int, user) -> None:
+    """Обрабатывает обратную связь от пользователя."""
+    user_id = user.id
+    username = user.username if user.username else f"ID_{user_id}"
 
-[ЗДЕСЬ ТВОЙ ТЕКСТ О ДОСТАВКЕ]
-Например: сроки, стоимость, способы доставки
-`;
+    if user_id not in active_dialogues:
+        active_dialogues[user_id] = {'username': username, 'chat_id': chat_id}
+        logger.info(f"Новый запрос обратной связи от {username} (ID: {user_id})")
 
-const RETURN_TEXT = `
-🔄 УСЛОВИЯ ВОЗВРАТА
+        # Отправляем сообщение администратору
+        send_admin_notification(context, f"Поступил новый запрос обратной связи от: @{username}")
 
-[ЗДЕСЬ ТВОЙ ТЕКСТ О ВОЗВРАТЕ]
-Например: условия возврата, сроки, процедура
-`;
+        # Отправляем пользователю подтверждение
+        context.bot.send_message(
+            chat_id=chat_id,
+            text="Ваше сообщение получено. Скоро с вами свяжется наш специалист."
+        )
+    else:
+        context.bot.send_message(
+            chat_id=chat_id,
+            text="Мы уже обрабатываем ваш запрос. Пожалуйста, подождите."
+        )
 
-const CATALOG_TEXT = `
-📦 НАШ КАТАЛОГ
+def send_admin_notification(context: CallbackContext, message_text: str) -> None:
+    """Отправляет уведомление администратору."""
+    keyboard = []
+    if active_dialogues:
+        for user_id, info in active_dialogues.items():
+            keyboard.append([InlineKeyboardButton(f"Диалог с @{info['username']}", callback_data=f"select_dialog_{user_id}")])
+        keyboard.append([InlineKeyboardButton("Выйти из диалога", callback_data="exit_dialog")]) # Кнопка для администратора
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        context.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=message_text,
+            reply_markup=reply_markup
+        )
+    else:
+        context.bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=message_text
+        )
 
-[ЗДЕСЬ ТВОЙ ТЕКСТ О КАТАЛОГЕ]
-Например: категории товаров, новинки, хиты продаж
-`;
+def handle_select_dialog(admin_chat_id: int, context: CallbackContext, user_id_to_dialog: str) -> None:
+    """Переводит администратора в режим диалога с выбранным пользователем."""
+    if user_id_to_dialog in active_dialogues:
+        target_user_info = active_dialogues[user_id_to_dialog]
+        target_user_chat_id = target_user_info['chat_id']
+        target_username = target_user_info['username']
 
-const ABOUT_TEXT = `
-🏢 О НАШЕМ БРЕНДЕ
+        # Отправляем администратору сообщение для начала диалога
+        keyboard_admin = [
+            [InlineKeyboardButton("Завершить диалог", callback_data="end_dialog")],
+            [InlineKeyboardButton("Выйти из диалога", callback_data="exit_dialog")]
+        ]
+        reply_markup_admin = InlineKeyboardMarkup(keyboard_admin)
+        context.bot.send_message(
+            chat_id=admin_chat_id,
+            text=f"Вы начали диалог с @{target_username}. Введите ваше сообщение ниже:",
+            reply_markup=reply_markup_admin
+        )
 
-[ЗДЕСЬ ТВОЙ ТЕКСТ О БРЕНДЕ]
-Например: философия бренда, история, преимущества
-`;
+        # Отправляем пользователю сообщение о том, что с ним связывается специалист
+        context.bot.send_message(
+            chat_id=target_user_chat_id,
+            text="С вами связался наш специалист. Пожалуйста, ожидайте."
+        )
 
-// ===== ДЛЯ ПОЛЬЗОВАТЕЛЕЙ =====
-bot.start((ctx) => {
-    ctx.reply(
-        `👋 Добро пожаловать в наш магазин!\n\nВыберите интересующий вас раздел:`,
-        mainKeyboard
-    );
-});
+        # Устанавливаем флаг для режима диалога с этим пользователем
+        context.user_data['in_dialog_with'] = user_id_to_dialog
+        context.user_data['dialog_admin_chat_id'] = admin_chat_id
+    else:
+        context.bot.send_message(
+            chat_id=admin_chat_id,
+            text="Этот диалог уже завершен или неактивен."
+        )
 
-bot.hears('🚚 Доставка', (ctx) => {
-    ctx.reply(DELIVERY_TEXT, mainKeyboard);
-});
+def handle_reply_to_client(admin_chat_id: int, context: CallbackContext, admin_user_id: int) -> None:
+    """Переключает бота в режим ожидания ответа администратора."""
+    if 'in_dialog_with' in context.user_data and context.user_data['dialog_admin_chat_id'] == admin_chat_id:
+        context.bot.send_message(
+            chat_id=admin_chat_id,
+            text="Напишите ваш ответ клиенту:"
+        )
+        # Устанавливаем состояние для ожидания сообщения от администратора
+        context.user_data['awaiting_admin_reply'] = True
+    else:
+        context.bot.send_message(
+            chat_id=admin_chat_id,
+            text="Пожалуйста, сначала выберите диалог для ответа."
+        )
 
-bot.hears('🔄 Возврат', (ctx) => {
-    ctx.reply(RETURN_TEXT, mainKeyboard);
-});
+def admin_message_handler(update: Update, context: CallbackContext) -> None:
+    """Обрабатывает сообщения от администратора в режиме диалога."""
+    if update.message and update.message.chat_id == int(ADMIN_CHAT_ID):
+        if 'awaiting_admin_reply' in context.user_data and context.user_data['awaiting_admin_reply']:
+            # Отправляем сообщение клиенту
+            client_user_id = context.user_data['in_dialog_with']
+            client_chat_id = active_dialogues[client_user_id]['chat_id']
+            message_to_client = update.message.text
 
-bot.hears('📦 Каталог', (ctx) => {
-    ctx.reply(CATALOG_TEXT, mainKeyboard);
-});
+            context.bot.send_message(
+                chat_id=client_chat_id,
+                text=f"Ответ специалиста: {message_to_client}"
+            )
 
-bot.hears('🏢 О бренде', (ctx) => {
-    ctx.reply(ABOUT_TEXT, mainKeyboard);
-});
+            # Отправляем администратору подтверждение и кнопки
+            keyboard_admin = [
+                [InlineKeyboardButton("Завершить диалог", callback_data="end_dialog")],
+                [InlineKeyboardButton("Выйти из диалога", callback_data="exit_dialog")]
+            ]
+            reply_markup_admin = InlineKeyboardMarkup(keyboard_admin)
+            context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text=f"Ваше сообщение отправлено клиенту @{active_dialogues[client_user_id]['username']}. Введите следующий ответ или завершите диалог:",
+                reply_markup=reply_markup_admin
+            )
 
-bot.hears('📞 Обратная связь', async (ctx) => {
-    const userId = ctx.from.id;
-    const userName = ctx.from.first_name || 'Пользователь';
-    const username = ctx.from.username ? `@${ctx.from.username}` : 'нет username';
+            # Сбрасываем состояние ожидания
+            context.user_data['awaiting_admin_reply'] = False
+        elif 'in_dialog_with' in context.user_data and context.user_data['dialog_admin_chat_id'] == update.message.chat_id:
+            # Если администратор написал что-то, когда не в режиме ожидания ответа
+            context.bot.send_message(
+                chat_id=ADMIN_CHAT_ID,
+                text="Чтобы ответить клиенту, нажмите кнопку 'Ответить клиенту'."
+            )
 
-    // Добавляем пользователя в активные
-    activeUsers.set(userId.toString(), {
-        userName: userName,
-        chatId: ctx.chat.id,
-        username: username
-    });
 
-    // Сообщение админу
-    const adminMessage = 
-`🔔 НОВЫЙ ЗАПРОС ОБРАТНОЙ СВЯЗИ!
+def handle_end_dialog(admin_chat_id: int, context: CallbackContext, admin_user_id: int) -> None:
+    """Завершает диалог с пользователем."""
+    if 'in_dialog_with' in context.user_data and context.user_data['dialog_admin_chat_id'] == admin_chat_id:
+        user_id_to_end = context.user_data['in_dialog_with']
 
-👤 Имя: ${userName}
-📱 Username: ${username}
-🆔 ID: ${userId}
-⏰ Время: ${new Date().toLocaleString('ru-RU')}
+        if user_id_to_end in active_dialogues:
+            client_chat_id = active_dialogues[user_id_to_end]['chat_id']
+            client_username = active_dialogues[user_id_to_end]['username']
 
-Нажмите "💬 Ответить клиенту" для начала диалога`;
+            context.bot.send_message(
+                chat_id=client_chat_id,
+                text="Спасибо за обращение! Если у вас возникнут новые вопросы, обращайтесь."
+            )
+            context.bot.send_message(
+                chat_id=admin_chat_id,
+                text=f"Диалог с @{client_username} завершен."
+            )
 
-    try {
-        await bot.telegram.sendMessage(ADMIN_CHAT_ID, adminMessage, adminMainKeyboard);
-        await ctx.reply('✅ Ваш запрос отправлен! Сотрудник свяжется с вами в ближайшее время.', mainKeyboard);
-    } catch (error) {
-        await ctx.reply('❌ Ошибка отправки. Попробуйте позже.', mainKeyboard);
-    }
-});
+            # Удаляем пользователя из активных диалогов
+            del active_dialogues[user_id_to_end]
+            logger.info(f"Диалог с {client_username} (ID: {user_id_to_end}) завершен администратором.")
 
-// Перехватываем все сообщения от пользователей ожидающих ответа
-bot.on('text', async (ctx) => {
-    const userId = ctx.from.id.toString();
-    const userText = ctx.message.text;
-    const userName = ctx.from.first_name || 'Пользователь';
+            # Сбрасываем состояние диалога у администратора
+            context.user_data.pop('in_dialog_with', None)
+            context.user_data.pop('dialog_admin_chat_id', None)
+            context.user_data.pop('awaiting_admin_reply', None)
 
-    // Если пользователь активен в списке ожидания - пересылаем его сообщение админу
-    if (activeUsers.has(userId) && !['🚚 Доставка', '🔄 Возврат', '📦 Каталог', '🏢 О бренде', '📞 Обратная связь'].includes(userText)) {
-        
-        // Если админ в диалоге с этим пользователем - сразу пересылаем
-        if (adminState.selectedUser === userId) {
-            try {
-                await bot.telegram.sendMessage(ADMIN_CHAT_ID, `👤 ${userName}: ${userText}`, adminDialogKeyboard);
-                await ctx.reply('✅ Сообщение доставлено', mainKeyboard);
-            } catch (error) {
-                await ctx.reply('❌ Ошибка отправки.', mainKeyboard);
-            }
-        } else {
-            // Если админ не в диалоге - отправляем уведомление
-            const adminMessage = 
-`📨 Сообщение от ${userName} (${activeUsers.get(userId).username}):
+            # Обновляем уведомление для администратора
+            send_admin_notification(context, "Диалог завершен.")
+        else:
+            context.bot.send_message(
+                chat_id=admin_chat_id,
+                text="Этот диалог уже неактивен."
+            )
+    else:
+        context.bot.send_message(
+            chat_id=admin_chat_id,
+            text="Вы не находитесь в активном диалоге."
+        )
 
-${userText}
+def handle_exit_dialog(admin_chat_id: int, context: CallbackContext, admin_user_id: int) -> None:
+    """Выход из текущего диалога (если активен) или просто сброс состояния."""
+    if 'in_dialog_with' in context.user_data and context.user_data['dialog_admin_chat_id'] == admin_chat_id:
+        user_id_to_exit = context.user_data['in_dialog_with']
+        client_username = active_dialogues[user_id_to_exit]['username']
 
-Нажмите "💬 Ответить клиенту" для ответа`;
+        context.bot.send_message(
+            chat_id=admin_chat_id,
+            text=f"Вы вышли из диалога с @{client_username}."
+        )
+        # Сбрасываем состояние диалога у администратора
+        context.user_data.pop('in_dialog_with', None)
+        context.user_data.pop('dialog_admin_chat_id', None)
+        context.user_data.pop('awaiting_admin_reply', None)
 
-            try {
-                await bot.telegram.sendMessage(ADMIN_CHAT_ID, adminMessage, adminMainKeyboard);
-                await ctx.reply('✅ Сообщение передано сотруднику. Ожидайте ответа.', mainKeyboard);
-            } catch (error) {
-                await ctx.reply('❌ Ошибка отправки.', mainKeyboard);
-            }
-        }
-    }
-});
+        # Обновляем уведомление для администратора
+        send_admin_notification(context, f"Администратор вышел из диалога с @{client_username}.")
+    else:
+        context.bot.send_message(
+            chat_id=admin_chat_id,
+            text="Вы не находитесь в активном диалоге."
+        )
 
-// ===== ДЛЯ АДМИНА =====
+def main() -> None:
+    """Запускает бота."""
+    updater = Updater(BOT_TOKEN)
 
-// Команда /admin для админ-панели
-bot.command('admin', (ctx) => {
-    if (ctx.from.id.toString() !== ADMIN_CHAT_ID) {
-        return ctx.reply('❌ Доступ запрещен');
-    }
-    showAdminPanel(ctx);
-});
+    dispatcher = updater.dispatcher
 
-// Функция показа админ-панели
-function showAdminPanel(ctx) {
-    const activeCount = activeUsers.size;
-    
-    let message = `👨‍💼 ПАНЕЛЬ АДМИНИСТРАТОРА\n\n`;
-    message += `👥 Клиентов в ожидании: ${activeCount}\n`;
-    
-    if (adminState.selectedUser) {
-        message += `💬 В диалоге с: ${adminState.selectedUserName}\n`;
-    }
-    
-    if (activeCount > 0) {
-        message += `\n📋 Активные клиенты:\n`;
-        let counter = 1;
-        activeUsers.forEach((user, userId) => {
-            const status = adminState.selectedUser === userId ? '✅ В ДИАЛОГЕ' : '⏳ ОЖИДАЕТ';
-            message += `${counter}. ${user.userName} (${user.username}) - ${status}\n`;
-            counter++;
-        });
-    } else {
-        message += `\n📭 Нет активных клиентов`;
-    }
-    
-    ctx.reply(message, adminMainKeyboard);
-}
+    # Обработчики команд
+    dispatcher.add_handler(CommandHandler("start", start))
 
-// Обработка ВСЕХ сообщений админа
-bot.on('text', async (ctx) => {
-    if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
-    
-    const text = ctx.message.text;
+    # Обработчик нажатий на inline кнопки
+    dispatcher.add_handler(CallbackQueryHandler(button_callback))
 
-    // === ЕСЛИ АДМИН В ДИАЛОГЕ ===
-    if (adminState.selectedUser && adminState.currentAction === 'in_dialog') {
-        
-        // Кнопка "Завершить и выйти"
-        if (text === '🚪 Завершить и выйти') {
-            const userName = adminState.selectedUserName;
-            adminState = { currentAction: null, selectedUser: null, selectedUserName: null };
-            
-            // Уведомляем пользователя
-            try {
-                await bot.telegram.sendMessage(
-                    adminState.selectedUser,
-                    '💬 Диалог с сотрудником завершен. Если у вас есть еще вопросы - нажмите кнопку "📞 Обратная связь"',
-                    mainKeyboard
-                );
-            } catch (error) {
-                // Игнорируем ошибку
-            }
-            
-            // Удаляем пользователя из активных
-            activeUsers.delete(adminState.selectedUser);
-            
-            await ctx.reply(`✅ Диалог с ${userName} завершен`, adminMainKeyboard);
-            showAdminPanel(ctx);
-            return;
-        }
-        
-        // Любое другое сообщение - отправляем пользователю
-        try {
-            await bot.telegram.sendMessage(
-                adminState.selectedUser,
-                `👨‍💼 Ответ от сотрудника:\n\n${text}`,
-                mainKeyboard
-            );
-            await ctx.reply('✅ Сообщение отправлено', adminDialogKeyboard);
-        } catch (error) {
-            await ctx.reply('❌ Ошибка отправки. Клиент заблокировал бота.', adminMainKeyboard);
-            activeUsers.delete(adminState.selectedUser);
-            adminState = { currentAction: null, selectedUser: null, selectedUserName: null };
-            showAdminPanel(ctx);
-        }
-        return;
-    }
+    # Обработчик сообщений от администратора (для диалогов)
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, admin_message_handler))
 
-    // === ЕСЛИ АДМИН НЕ В ДИАЛОГЕ ===
+    # Запуск бота
+    updater.start_polling()
+    logger.info("Бот запущен.")
+    updater.idle()
 
-    // Кнопка "Список клиентов"
-    if (text === '📋 Список клиентов') {
-        showAdminPanel(ctx);
-        return;
-    }
-
-    // Кнопка "Ответить клиенту"
-    if (text === '💬 Ответить клиенту') {
-        if (activeUsers.size === 0) {
-            return ctx.reply('📭 Нет клиентов для ответа', adminMainKeyboard);
-        }
-
-        // Если всего один клиент - сразу начинаем диалог
-        if (activeUsers.size === 1) {
-            const [userId, userData] = Array.from(activeUsers.entries())[0];
-            adminState = {
-                currentAction: 'in_dialog',
-                selectedUser: userId,
-                selectedUserName: userData.userName
-            };
-            
-            await ctx.reply(
-                `💬 ДИАЛОГ С: ${userData.userName} (${userData.username})\n\nПишите сообщения - они будут отправляться клиенту автоматически.\n\nДля выхода нажмите "🚪 Завершить и выйти"`,
-                adminDialogKeyboard
-            );
-            return;
-        }
-
-        // Если несколько клиентов - показываем список
-        adminState.currentAction = 'select_user';
-        
-        let message = `💬 ВЫБЕРИТЕ КЛИЕНТА ДЛЯ ОТВЕТА:\n\n`;
-        let counter = 1;
-        const usersArray = Array.from(activeUsers.entries());
-        
-        usersArray.forEach(([userId, userData], index) => {
-            message += `${counter}. ${userData.userName} (${userData.username})\n`;
-            counter++;
-        });
-        
-        await ctx.reply(message, adminMainKeyboard);
-        return;
-    }
-
-    // Кнопка "Завершить диалог"
-    if (text === '❌ Завершить диалог') {
-        if (activeUsers.size === 0) {
-            return ctx.reply('📭 Нет активных диалогов', adminMainKeyboard);
-        }
-
-        // Если всего один клиент - сразу завершаем
-        if (activeUsers.size === 1) {
-            const [userId, userData] = Array.from(activeUsers.entries())[0];
-            
-            // Уведомляем пользователя
-            try {
-                await bot.telegram.sendMessage(
-                    userId,
-                    '💬 Диалог с сотрудником завершен. Если у вас есть еще вопросы - нажмите кнопку "📞 Обратная связь"',
-                    mainKeyboard
-                );
-            } catch (error) {
-                // Игнорируем ошибку
-            }
-            
-            // Удаляем пользователя
-            activeUsers.delete(userId);
-            await ctx.reply(`✅ Диалог с ${userData.userName} завершен`, adminMainKeyboard);
-            return;
-        }
-
-        // Если несколько клиентов - показываем список для завершения
-        adminState.currentAction = 'end_dialog';
-        
-        let message = `❌ ВЫБЕРИТЕ КЛИЕНТА ДЛЯ ЗАВЕРШЕНИЯ:\n\n`;
-        let counter = 1;
-        const usersArray = Array.from(activeUsers.entries());
-        
-        usersArray.forEach(([userId, userData], index) => {
-            message += `${counter}. ${userData.userName} (${userData.username})\n`;
-            counter++;
-        });
-        
-        await ctx.reply(message, adminMainKeyboard);
-        return;
-    }
-
-    // Кнопка "Выйти из диалога"
-    if (text === '🚪 Выйти из диалога') {
-        if (adminState.selectedUser) {
-            const userName = adminState.selectedUserName;
-            adminState = { currentAction: null, selectedUser: null, selectedUserName: null };
-            await ctx.reply(`✅ Вы вышли из диалога с ${userName}`, adminMainKeyboard);
-        } else {
-            await ctx.reply('❌ Вы не в диалоге', adminMainKeyboard);
-        }
-        return;
-    }
-
-    // Обработка выбора клиента по номеру
-    if (adminState.currentAction === 'select_user' || adminState.currentAction === 'end_dialog') {
-        const userNumber = parseInt(text);
-        const usersArray = Array.from(activeUsers.entries());
-        
-        if (isNaN(userNumber) || userNumber < 1 || userNumber > usersArray.length) {
-            adminState.currentAction = null;
-            return ctx.reply('❌ Неверный номер', adminMainKeyboard);
-        }
-
-        const [userId, userData] = usersArray[userNumber - 1];
-
-        if (adminState.currentAction === 'select_user') {
-            // Начинаем диалог
-            adminState = {
-                currentAction: 'in_dialog',
-                selectedUser: userId,
-                selectedUserName: userData.userName
-            };
-            
-            await ctx.reply(
-                `💬 ДИАЛОГ С: ${userData.userName} (${userData.username})\n\nПишите сообщения - они будут отправляться клиенту автоматически.\n\nДля выхода нажмите "🚪 Завершить и выйти"`,
-                adminDialogKeyboard
-            );
-        } else {
-            // Завершаем диалог
-            try {
-                await bot.telegram.sendMessage(
-                    userId,
-                    '💬 Диалог с сотрудником завершен. Если у вас есть еще вопросы - нажмите кнопку "📞 Обратная связь"',
-                    mainKeyboard
-                );
-            } catch (error) {
-                // Игнорируем ошибку
-            }
-            
-            activeUsers.delete(userId);
-            adminState.currentAction = null;
-            await ctx.reply(`✅ Диалог с ${userData.userName} завершен`, adminMainKeyboard);
-        }
-        return;
-    }
-
-    // Если админ пишет что-то другое
-    showAdminPanel(ctx);
-});
-
-// ===== ЗАПУСК =====
-bot.launch().then(() => {
-    console.log('🤖 Бот запущен!');
-    console.log('👨‍💼 Команда админа: /admin');
-}).catch((error) => {
-    console.log('❌ Ошибка:', error.message);
-});
-
-app.get('/', (req, res) => {
-    res.send('✅ Бот работает!');
-});
-
-app.listen(PORT, () => {
-    console.log(`🚀 Сервер на порту ${PORT}`);
-});
+if __name__ == '__main__':
+    main()
