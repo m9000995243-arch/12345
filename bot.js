@@ -11,350 +11,328 @@ const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
 
 // ===== ХРАНИЛИЩЕ =====
-const userSessions = new Map(); // userId -> {userName, isWaitingForAdmin, history}
+const activeUsers = new Map(); // userId -> {userName, chatId}
 let adminState = { currentAction: null, selectedUser: null };
 
-// ===== ИНФОРМАЦИЯ О БРЕНДЕ =====
-const BRAND_INFO = {
-  name: "Mortem Vellum",
-  description: "концептуальная одежда с историей",
-  delivery: "СДЭК, Почта России, Boxberry, Avito Доставка (2-5 дней)",
-  phone: "+7 900 099 52 43",
-  production: "ручное производство, шелкография",
-  warranty: "7 дней на производственный брак",
-  payment: "100% предоплата или 50% + наложенный платеж",
-  returnPolicy: "возврат за наш счет при нашей ошибке"
-};
-
 // ===== КЛАВИАТУРЫ =====
-const userKeyboard = Markup.keyboard([['👨‍💼 Позвать сотрудника']]).resize();
-const adminMainKeyboard = Markup.keyboard([
-  ['📋 Список запросов', '💬 Ответить пользователю'],
-  ['❌ Завершить диалог']
+const mainKeyboard = Markup.keyboard([
+    ['🚚 Доставка', '🔄 Возврат'],
+    ['📦 Каталог', '🏢 О бренде'],
+    ['📞 Обратная связь']
+]).resize();
+
+const adminKeyboard = Markup.keyboard([
+    ['💬 Ответить клиенту', '❌ Завершить диалог'],
+    ['📋 Список клиентов']
 ]).resize();
 
 const adminCancelKeyboard = Markup.keyboard([['↩️ Отмена']]).resize();
 
-// ===== УМНЫЕ ОТВЕТЫ =====
-function getSmartResponse(question) {
-  const lowerQuestion = question.toLowerCase();
-  
-  if (lowerQuestion.includes('привет') || lowerQuestion.includes('здравств')) {
-    return `Привет! Я помощник бренда ${BRAND_INFO.name}. Чем могу помочь?`;
-  }
-  
-  if (lowerQuestion.includes('достав') || lowerQuestion.includes('срок') || lowerQuestion.includes('получ')) {
-    return `🚚 ${BRAND_INFO.delivery}\n\nМы отправляем заказы в течение 1-2 рабочих дней после оплаты.`;
-  }
-  
-  if (lowerQuestion.includes('оплат') || lowerQuestion.includes('цена') || lowerQuestion.includes('стоим')) {
-    return `💳 ${BRAND_INFO.payment}\n\nЦены от 1500 до 5000 рублей в зависимости от модели.`;
-  }
-  
-  if (lowerQuestion.includes('гарант') || lowerQuestion.includes('возврат')) {
-    return `🛡️ ${BRAND_INFO.warranty}\n\n${BRAND_INFO.returnPolicy}`;
-  }
-  
-  if (lowerQuestion.includes('производств') || lowerQuestion.includes('качеств')) {
-    return `🎨 ${BRAND_INFO.production}\n\nКаждая вещь создается вручную с вниманием к деталям.`;
-  }
-  
-  if (lowerQuestion.includes('контакт') || lowerQuestion.includes('телефон')) {
-    return `📞 ${BRAND_INFO.phone}\n\nЗвоните или пишите в WhatsApp/Telegram.`;
-  }
-  
-  if (lowerQuestion.includes('бренд') || lowerQuestion.includes('mortem')) {
-    return `🎭 ${BRAND_INFO.name} - это ${BRAND_INFO.description}.`;
-  }
-  
-  if (lowerQuestion.includes('коллекц') || lowerQuestion.includes('одежд')) {
-    return `👕 У нас есть худи, футболки и свитшоты с уникальными принтами.`;
-  }
-  
-  if (lowerQuestion.includes('размер')) {
-    return `📏 Есть размеры от S до XL. Рекомендуем ориентироваться на ваши стандартные размеры.`;
-  }
-  
-  return `Расскажите подробнее о вашем вопросе. Или нажмите кнопку для связи с сотрудником 👇`;
-}
+// ===== ТЕКСТ ДЛЯ КНОПОК (ЗАПОЛНИ ЭТО САМ) =====
+
+// === ЗАПОЛНИ ЭТОТ ТЕКСТ ===
+const DELIVERY_TEXT = `
+🚚 ИНФОРМАЦИЯ О ДОСТАВКЕ
+
+[ЗДЕСЬ ТВОЙ ТЕКСТ О ДОСТАВКЕ]
+Например: сроки, стоимость, способы доставки
+`;
+
+const RETURN_TEXT = `
+🔄 УСЛОВИЯ ВОЗВРАТА
+
+[ЗДЕСЬ ТВОЙ ТЕКСТ О ВОЗВРАТЕ]
+Например: условия возврата, сроки, процедура
+`;
+
+const CATALOG_TEXT = `
+📦 НАШ КАТАЛОГ
+
+[ЗДЕСЬ ТВОЙ ТЕКСТ О КАТАЛОГЕ]
+Например: категории товаров, новинки, хиты продаж
+`;
+
+const ABOUT_TEXT = `
+🏢 О НАШЕМ БРЕНДЕ
+
+[ЗДЕСЬ ТВОЙ ТЕКСТ О БРЕНДЕ]
+Например: философия бренда, история, преимущества
+`;
+// === КОНЕЦ ЗАПОЛНЕНИЯ ===
 
 // ===== ДЛЯ ПОЛЬЗОВАТЕЛЕЙ =====
 bot.start((ctx) => {
-  const userId = ctx.from.id.toString();
-  const userName = ctx.from.first_name || 'Пользователь';
-  
-  // Создаем сессию пользователя
-  if (!userSessions.has(userId)) {
-    userSessions.set(userId, {
-      userName: userName,
-      isWaitingForAdmin: false,
-      history: []
-    });
-  }
-  
-  ctx.reply(
-    `Привет! Я помощник бренда ${BRAND_INFO.name}. 🎭\n\nЗадайте вопрос или нажмите кнопку для связи с сотрудником 👇`,
-    userKeyboard
-  );
+    ctx.reply(
+        `👋 Добро пожаловать в наш магазин!\n\nВыберите интересующий вас раздел:`,
+        mainKeyboard
+    );
 });
 
-bot.on('text', async (ctx) => {
-  const userText = ctx.message.text;
-  const userId = ctx.from.id.toString();
-  const userName = ctx.from.first_name || 'Пользователь';
+bot.hears('🚚 Доставка', (ctx) => {
+    ctx.reply(DELIVERY_TEXT, mainKeyboard);
+});
 
-  // Если пользователь нажал "Позвать сотрудника"
-  if (userText === '👨‍💼 Позвать сотрудника') {
-    // Создаем/обновляем сессию и помечаем что ждет ответа от админа
-    userSessions.set(userId, {
-      userName: userName,
-      isWaitingForAdmin: true,
-      history: []
+bot.hears('🔄 Возврат', (ctx) => {
+    ctx.reply(RETURN_TEXT, mainKeyboard);
+});
+
+bot.hears('📦 Каталог', (ctx) => {
+    ctx.reply(CATALOG_TEXT, mainKeyboard);
+});
+
+bot.hears('🏢 О бренде', (ctx) => {
+    ctx.reply(ABOUT_TEXT, mainKeyboard);
+});
+
+bot.hears('📞 Обратная связь', async (ctx) => {
+    const userId = ctx.from.id;
+    const userName = ctx.from.first_name || 'Пользователь';
+    const username = ctx.from.username ? `@${ctx.from.username}` : 'нет username';
+
+    // Добавляем пользователя в активные
+    activeUsers.set(userId.toString(), {
+        userName: userName,
+        chatId: ctx.chat.id,
+        username: username
     });
 
+    // Сообщение админу
     const adminMessage = 
-`🔔 НОВЫЙ ЗАПРОС ОТ КЛИЕНТА!
+`🔔 НОВЫЙ ЗАПРОС ОБРАТНОЙ СВЯЗИ!
 
 👤 Имя: ${userName}
+📱 Username: ${username}
 🆔 ID: ${userId}
 ⏰ Время: ${new Date().toLocaleString('ru-RU')}
 
-Пользователь ожидает вашего ответа!`;
+Пользователь ожидает ответа!`;
 
     try {
-      await bot.telegram.sendMessage(ADMIN_CHAT_ID, adminMessage, adminMainKeyboard);
-      await ctx.reply('✅ Сотрудник уведомлен! Теперь все ваши сообщения будут переадресованы сотруднику. Ожидайте ответа.', userKeyboard);
+        await bot.telegram.sendMessage(ADMIN_CHAT_ID, adminMessage, adminKeyboard);
+        await ctx.reply('✅ Ваш запрос отправлен! Сотрудник свяжется с вами в ближайшее время.', mainKeyboard);
     } catch (error) {
-      await ctx.reply('❌ Ошибка связи. Попробуйте позже.', userKeyboard);
+        await ctx.reply('❌ Ошибка отправки. Попробуйте позже.', mainKeyboard);
     }
-    return;
-  }
+});
 
-  // Если пользователь ожидает ответа от админа - пересылаем сообщение админу
-  const userSession = userSessions.get(userId);
-  if (userSession && userSession.isWaitingForAdmin) {
-    const adminMessage = 
+// Перехватываем все сообщения от пользователей ожидающих ответа
+bot.on('text', async (ctx) => {
+    const userId = ctx.from.id.toString();
+    const userText = ctx.message.text;
+    const userName = ctx.from.first_name || 'Пользователь';
+
+    // Если пользователь активен в списке ожидания - пересылаем его сообщение админу
+    if (activeUsers.has(userId) && !userText.startsWith('/')) {
+        const adminMessage = 
 `📨 Сообщение от ${userName} (ID: ${userId}):
 
 ${userText}
 
-💬 Ответьте через кнопку "💬 Ответить пользователю"`;
+💬 Ответьте через кнопку "💬 Ответить клиенту"`;
 
-    try {
-      await bot.telegram.sendMessage(ADMIN_CHAT_ID, adminMessage, adminMainKeyboard);
-      await ctx.reply('✅ Сообщение передано сотруднику. Ожидайте ответа.', userKeyboard);
-    } catch (error) {
-      await ctx.reply('❌ Ошибка отправки.', userKeyboard);
+        try {
+            await bot.telegram.sendMessage(ADMIN_CHAT_ID, adminMessage, adminKeyboard);
+            await ctx.reply('✅ Сообщение передано сотруднику. Ожидайте ответа.', mainKeyboard);
+        } catch (error) {
+            await ctx.reply('❌ Ошибка отправки.', mainKeyboard);
+        }
     }
-    return;
-  }
-
-  // Обычные сообщения - отвечаем через умные ответы
-  try {
-    const response = getSmartResponse(userText);
-    await ctx.reply(response, userKeyboard);
-    
-  } catch (error) {
-    await ctx.reply('Произошла ошибка. Попробуйте еще раз.', userKeyboard);
-  }
 });
 
 // ===== ДЛЯ АДМИНА =====
 
-// Команда /admin
+// Команда /admin для админ-панели
 bot.command('admin', (ctx) => {
-  if (ctx.from.id.toString() !== ADMIN_CHAT_ID) {
-    return ctx.reply('❌ Доступ запрещен');
-  }
-  
-  showAdminPanel(ctx);
+    if (ctx.from.id.toString() !== ADMIN_CHAT_ID) {
+        return ctx.reply('❌ Доступ запрещен');
+    }
+    showAdminPanel(ctx);
 });
 
 // Функция показа админ-панели
 function showAdminPanel(ctx) {
-  const waitingUsers = Array.from(userSessions.entries())
-    .filter(([id, session]) => session.isWaitingForAdmin);
-  
-  let message = `👨‍💼 Панель администратора\n\n`;
-  message += `⏳ Ожидают ответа: ${waitingUsers.length}\n`;
-  message += `👥 Всего пользователей: ${userSessions.size}\n\n`;
-  
-  if (waitingUsers.length > 0) {
-    message += `📋 Пользователи ожидающие ответа:\n`;
-    waitingUsers.forEach(([userId, session], index) => {
-      message += `${index + 1}. ${session.userName} (ID: ${userId})\n`;
-    });
-  } else {
-    message += `📭 Нет активных запросов`;
-  }
-  
-  ctx.reply(message, adminMainKeyboard);
-  adminState = { currentAction: null, selectedUser: null };
+    const activeCount = activeUsers.size;
+    
+    let message = `👨‍💼 ПАНЕЛЬ АДМИНИСТРАТОРА\n\n`;
+    message += `👥 Клиентов в ожидании: ${activeCount}\n\n`;
+    
+    if (activeCount > 0) {
+        message += `📋 Активные клиенты:\n`;
+        let counter = 1;
+        activeUsers.forEach((user, userId) => {
+            message += `${counter}. ${user.userName} (${user.username})\n`;
+            counter++;
+        });
+    } else {
+        message += `📭 Нет активных клиентов`;
+    }
+    
+    ctx.reply(message, adminKeyboard);
+    adminState = { currentAction: null, selectedUser: null };
 }
 
 // Обработка кнопок админа
 bot.on('text', async (ctx) => {
-  if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
-  
-  const text = ctx.message.text;
-  
-  // Кнопка "Список запросов"
-  if (text === '📋 Список запросов') {
+    if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
+    
+    const text = ctx.message.text;
+
+    // Кнопка "Список клиентов"
+    if (text === '📋 Список клиентов') {
+        showAdminPanel(ctx);
+        return;
+    }
+
+    // Кнопка "Ответить клиенту"
+    if (text === '💬 Ответить клиенту') {
+        if (activeUsers.size === 0) {
+            return ctx.reply('📭 Нет клиентов для ответа', adminKeyboard);
+        }
+
+        adminState.currentAction = 'select_user_for_reply';
+        
+        let message = `💬 ВЫБЕРИТЕ КЛИЕНТА ДЛЯ ОТВЕТА:\n\n`;
+        let counter = 1;
+        activeUsers.forEach((user, userId) => {
+            message += `${counter}. ${user.userName} (${user.username})\n`;
+            counter++;
+        });
+        
+        message += `\n📝 Напишите номер клиента (1, 2, 3...)`;
+        
+        await ctx.reply(message, adminCancelKeyboard);
+        return;
+    }
+
+    // Кнопка "Завершить диалог"
+    if (text === '❌ Завершить диалог') {
+        if (activeUsers.size === 0) {
+            return ctx.reply('📭 Нет активных диалогов', adminKeyboard);
+        }
+
+        adminState.currentAction = 'select_user_for_end';
+        
+        let message = `❌ ЗАВЕРШЕНИЕ ДИАЛОГА:\n\n`;
+        let counter = 1;
+        activeUsers.forEach((user, userId) => {
+            message += `${counter}. ${user.userName} (${user.username})\n`;
+            counter++;
+        });
+        
+        message += `\n📝 Напишите номер клиента для завершения диалога`;
+        
+        await ctx.reply(message, adminCancelKeyboard);
+        return;
+    }
+
+    // Кнопка "Отмена"
+    if (text === '↩️ Отмена') {
+        adminState = { currentAction: null, selectedUser: null };
+        showAdminPanel(ctx);
+        return;
+    }
+
+    // Обработка выбора клиента для ответа
+    if (adminState.currentAction === 'select_user_for_reply') {
+        const userNumber = parseInt(text);
+        
+        if (isNaN(userNumber) || userNumber < 1 || userNumber > activeUsers.size) {
+            return ctx.reply('❌ Неверный номер. Выберите из списка:', adminCancelKeyboard);
+        }
+
+        // Получаем userId по номеру
+        const usersArray = Array.from(activeUsers.entries());
+        const [userId, userData] = usersArray[userNumber - 1];
+        
+        adminState = {
+            currentAction: 'waiting_reply_message',
+            selectedUser: userId
+        };
+
+        await ctx.reply(
+            `💬 ОТВЕТ ДЛЯ: ${userData.userName} (${userData.username})\n\n📝 Напишите ваш ответ:`,
+            adminCancelKeyboard
+        );
+        return;
+    }
+
+    // Обработка сообщения для клиента
+    if (adminState.currentAction === 'waiting_reply_message') {
+        const userId = adminState.selectedUser;
+        
+        if (!activeUsers.has(userId)) {
+            adminState = { currentAction: null, selectedUser: null };
+            return ctx.reply('❌ Клиент больше не активен', adminKeyboard);
+        }
+
+        const userData = activeUsers.get(userId);
+        
+        try {
+            // Отправляем сообщение клиенту
+            await bot.telegram.sendMessage(
+                userId,
+                `👨‍💼 Ответ от сотрудника:\n\n${text}`,
+                mainKeyboard
+            );
+            
+            await ctx.reply(`✅ Ответ отправлен ${userData.userName}`, adminKeyboard);
+            
+        } catch (error) {
+            await ctx.reply(`❌ Ошибка отправки. Клиент заблокировал бота.`, adminKeyboard);
+            activeUsers.delete(userId); // Удаляем неактивного клиента
+        }
+        
+        adminState = { currentAction: null, selectedUser: null };
+        return;
+    }
+
+    // Обработка завершения диалога
+    if (adminState.currentAction === 'select_user_for_end') {
+        const userNumber = parseInt(text);
+        
+        if (isNaN(userNumber) || userNumber < 1 || userNumber > activeUsers.size) {
+            return ctx.reply('❌ Неверный номер. Выберите из списка:', adminCancelKeyboard);
+        }
+
+        // Получаем userId по номеру и удаляем
+        const usersArray = Array.from(activeUsers.entries());
+        const [userId, userData] = usersArray[userNumber - 1];
+        
+        // Отправляем уведомление клиенту
+        try {
+            await bot.telegram.sendMessage(
+                userId,
+                '💬 Диалог с сотрудником завершен. Если у вас есть еще вопросы - нажмите кнопку "📞 Обратная связь"',
+                mainKeyboard
+            );
+        } catch (error) {
+            // Игнорируем ошибку если клиент заблокировал бота
+        }
+        
+        // Удаляем клиента из активных
+        activeUsers.delete(userId);
+        
+        await ctx.reply(`✅ Диалог с ${userData.userName} завершен`, adminKeyboard);
+        adminState = { currentAction: null, selectedUser: null };
+        return;
+    }
+
+    // Если админ пишет что-то без активного действия
     showAdminPanel(ctx);
-    return;
-  }
-  
-  // Кнопка "Ответить пользователю"
-  if (text === '💬 Ответить пользователю') {
-    const waitingUsers = Array.from(userSessions.entries())
-      .filter(([id, session]) => session.isWaitingForAdmin);
-    
-    if (waitingUsers.length === 0) {
-      return ctx.reply('📭 Нет пользователей ожидающих ответа', adminMainKeyboard);
-    }
-    
-    adminState.currentAction = 'select_user_for_reply';
-    
-    let message = `💬 Выберите пользователя для ответа:\n\n`;
-    waitingUsers.forEach(([userId, session], index) => {
-      message += `${index + 1}. ${session.userName} (ID: ${userId})\n`;
-    });
-    
-    message += `\n📝 Напишите номер пользователя (1, 2, 3...)`;
-    
-    await ctx.reply(message, adminCancelKeyboard);
-    return;
-  }
-  
-  // Кнопка "Завершить диалог"
-  if (text === '❌ Завершить диалог') {
-    const waitingUsers = Array.from(userSessions.entries())
-      .filter(([id, session]) => session.isWaitingForAdmin);
-    
-    if (waitingUsers.length === 0) {
-      return ctx.reply('📭 Нет активных диалогов для завершения', adminMainKeyboard);
-    }
-    
-    adminState.currentAction = 'select_user_for_end';
-    
-    let message = `❌ Завершение диалога:\n\n`;
-    waitingUsers.forEach(([userId, session], index) => {
-      message += `${index + 1}. ${session.userName} (ID: ${userId})\n`;
-    });
-    
-    message += `\n📝 Напишите номер пользователя для завершения диалога`;
-    
-    await ctx.reply(message, adminCancelKeyboard);
-    return;
-  }
-  
-  // Кнопка "Отмена"
-  if (text === '↩️ Отмена') {
-    adminState = { currentAction: null, selectedUser: null };
-    showAdminPanel(ctx);
-    return;
-  }
-  
-  // Обработка выбора пользователя для ответа
-  if (adminState.currentAction === 'select_user_for_reply') {
-    const userNumber = parseInt(text);
-    const waitingUsers = Array.from(userSessions.entries())
-      .filter(([id, session]) => session.isWaitingForAdmin);
-    
-    if (isNaN(userNumber) || userNumber < 1 || userNumber > waitingUsers.length) {
-      return ctx.reply('❌ Неверный номер. Выберите из списка:', adminCancelKeyboard);
-    }
-    
-    const [userId, userSession] = waitingUsers[userNumber - 1];
-    adminState = { 
-      currentAction: 'waiting_reply_message', 
-      selectedUser: userId 
-    };
-    
-    await ctx.reply(
-      `💬 Ответ для: ${userSession.userName} (ID: ${userId})\n\n📝 Напишите ваш ответ:`,
-      adminCancelKeyboard
-    );
-    return;
-  }
-  
-  // Обработка сообщения для пользователя
-  if (adminState.currentAction === 'waiting_reply_message') {
-    const userId = adminState.selectedUser;
-    
-    if (!userSessions.has(userId)) {
-      adminState = { currentAction: null, selectedUser: null };
-      return ctx.reply('❌ Пользователь больше не активен', adminMainKeyboard);
-    }
-    
-    const userSession = userSessions.get(userId);
-    
-    try {
-      // Отправляем сообщение пользователю
-      await bot.telegram.sendMessage(
-        userId, 
-        `👨‍💼 Ответ от сотрудника:\n\n${text}`,
-        userKeyboard
-      );
-      
-      await ctx.reply(`✅ Ответ отправлен ${userSession.userName}`, adminMainKeyboard);
-      
-    } catch (error) {
-      await ctx.reply(`❌ Ошибка отправки. Пользователь заблокировал бота.`, adminMainKeyboard);
-      userSessions.delete(userId); // Удаляем неактивного пользователя
-    }
-    
-    adminState = { currentAction: null, selectedUser: null };
-    return;
-  }
-  
-  // Обработка завершения диалога
-  if (adminState.currentAction === 'select_user_for_end') {
-    const userNumber = parseInt(text);
-    const waitingUsers = Array.from(userSessions.entries())
-      .filter(([id, session]) => session.isWaitingForAdmin);
-    
-    if (isNaN(userNumber) || userNumber < 1 || userNumber > waitingUsers.length) {
-      return ctx.reply('❌ Неверный номер. Выберите из списка:', adminCancelKeyboard);
-    }
-    
-    const [userId, userSession] = waitingUsers[userNumber - 1];
-    
-    // Отправляем уведомление пользователю
-    try {
-      await bot.telegram.sendMessage(
-        userId, 
-        '💬 Диалог с сотрудником завершен. Если у вас есть еще вопросы - нажмите кнопку "👨‍💼 Позвать сотрудника"',
-        userKeyboard
-      );
-    } catch (error) {
-      // Игнорируем ошибку если пользователь заблокировал бота
-    }
-    
-    // Удаляем пользователя из ожидающих
-    userSessions.delete(userId);
-    
-    await ctx.reply(`✅ Диалог с ${userSession.userName} завершен`, adminMainKeyboard);
-    adminState = { currentAction: null, selectedUser: null };
-    return;
-  }
-  
-  // Если админ пишет что-то без активного действия
-  showAdminPanel(ctx);
 });
 
 // ===== ЗАПУСК =====
 bot.launch().then(() => {
-  console.log('🤖 Бот запущен!');
-  console.log('👨‍💼 Команда админа: /admin');
+    console.log('🤖 Бот запущен!');
+    console.log('👨‍💼 Команда админа: /admin');
 }).catch((error) => {
-  console.log('❌ Ошибка:', error.message);
+    console.log('❌ Ошибка:', error.message);
 });
 
 app.get('/', (req, res) => {
-  res.send('✅ Бот работает!');
+    res.send('✅ Бот работает!');
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Сервер на порту ${PORT}`);
+    console.log(`🚀 Сервер на порту ${PORT}`);
 });
