@@ -4,48 +4,17 @@ const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-console.log('=== 🚀 НАЧАЛО ЗАПУСКА ===');
+console.log('=== 🚀 ЗАПУСК БОТА ===');
 
-// ===== ПРОВЕРКА ПЕРЕМЕННЫХ =====
+// ===== НАСТРОЙКИ =====
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
-console.log('🔧 TELEGRAM_BOT_TOKEN:', TELEGRAM_BOT_TOKEN ? 'ЕСТЬ' : 'НЕТ!');
-console.log('🔧 ADMIN_CHAT_ID:', ADMIN_CHAT_ID ? 'ЕСТЬ' : 'НЕТ!');
-
-if (!TELEGRAM_BOT_TOKEN) {
-    console.log('❌ КРИТИЧЕСКАЯ ОШИБКА: TELEGRAM_BOT_TOKEN не установлен!');
-    console.log('💡 Добавь в Environment Variables:');
-    console.log('   TELEGRAM_BOT_TOKEN = твой_токен_от_BotFather');
-    process.exit(1);
-}
-
-if (!ADMIN_CHAT_ID) {
-    console.log('❌ КРИТИЧЕСКАЯ ОШИБКА: ADMIN_CHAT_ID не установлен!');
-    console.log('💡 Добавь в Environment Variables:');
-    console.log('   ADMIN_CHAT_ID = твой_id_из_@userinfobot');
-    process.exit(1);
-}
-
-console.log('✅ Все переменные проверены');
-
-// ===== СОЗДАНИЕ БОТА =====
-try {
-    console.log('🤖 Создаю бота...');
-    const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
-    console.log('✅ Бот создан');
-} catch (error) {
-    console.log('❌ Ошибка создания бота:', error.message);
-    process.exit(1);
-}
-
 const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
 
-// ===== ПРОСТОЕ ХРАНИЛИЩЕ =====
-let waitingClients = [];
-let currentDialog = null;
-
-console.log('✅ Хранилище инициализировано');
+// ===== ХРАНИЛИЩЕ =====
+let waitingClients = []; // [{id, name, username}]
+let adminState = { currentAction: null, selectedUser: null };
 
 // ===== КЛАВИАТУРЫ =====
 const userKeyboard = Markup.keyboard([
@@ -60,161 +29,242 @@ const adminKeyboard = Markup.keyboard([
     ['❌ Завершить диалог']
 ]).resize();
 
-console.log('✅ Клавиатуры созданы');
+// ===== ТЕКСТ ДЛЯ КНОПОК =====
+const DELIVERY_TEXT = "🚚 Информация о доставке...";
+const RETURN_TEXT = "🔄 Условия возврата..."; 
+const CATALOG_TEXT = "📦 Наш каталог...";
+const ABOUT_TEXT = "🏢 О нашем бренде...";
 
 // ===== ДЛЯ ПОЛЬЗОВАТЕЛЕЙ =====
 bot.start((ctx) => {
-    console.log('🎯 Получен /start от:', ctx.from.id);
     ctx.reply("👋 Добро пожаловать! Выберите раздел:", userKeyboard);
 });
 
-bot.hears('🚚 Доставка', (ctx) => {
-    ctx.reply("🚚 Информация о доставке...", userKeyboard);
-});
-
-bot.hears('🔄 Возврат', (ctx) => {
-    ctx.reply("🔄 Условия возврата...", userKeyboard);
-});
-
-bot.hears('📦 Каталог', (ctx) => {
-    ctx.reply("📦 Наш каталог...", userKeyboard);
-});
-
-bot.hears('🏢 О бренде', (ctx) => {
-    ctx.reply("🏢 О нашем бренде...", userKeyboard);
-});
+bot.hears('🚚 Доставка', (ctx) => ctx.reply(DELIVERY_TEXT, userKeyboard));
+bot.hears('🔄 Возврат', (ctx) => ctx.reply(RETURN_TEXT, userKeyboard));
+bot.hears('📦 Каталог', (ctx) => ctx.reply(CATALOG_TEXT, userKeyboard));
+bot.hears('🏢 О бренде', (ctx) => ctx.reply(ABOUT_TEXT, userKeyboard));
 
 bot.hears('📞 Обратная связь', async (ctx) => {
     const user = {
         id: ctx.from.id,
-        name: ctx.from.first_name || 'Клиент'
+        name: ctx.from.first_name || 'Клиент',
+        username: ctx.from.username ? `@${ctx.from.username}` : 'нет username'
     };
 
     if (!waitingClients.find(c => c.id === user.id)) {
         waitingClients.push(user);
     }
 
-    console.log('📨 Новый запрос от:', user.name);
-    
+    // Создаем инлайн-кнопки для админа
+    const buttons = waitingClients.map(client => 
+        [Markup.button.callback(
+            `👤 ${client.name} (${client.username})`, 
+            `select_client_${client.id}`
+        )]
+    );
+
+    const adminMessage = 
+`🔔 НОВЫЙ ЗАПРОС ОТ КЛИЕНТА!
+
+👤 ${user.name} (${user.username})
+🆔 ${user.id}
+
+Выберите клиента для ответа:`;
+
     try {
-        await bot.telegram.sendMessage(ADMIN_CHAT_ID, `🔔 Новый клиент: ${user.name}`, adminKeyboard);
+        await bot.telegram.sendMessage(
+            ADMIN_CHAT_ID, 
+            adminMessage, 
+            Markup.inlineKeyboard(buttons)
+        );
         ctx.reply("✅ Запрос отправлен! Ожидайте ответа.", userKeyboard);
     } catch (error) {
-        console.log('❌ Ошибка отправки админу:', error.message);
         ctx.reply("❌ Ошибка отправки.", userKeyboard);
     }
 });
 
-// ===== ДЛЯ АДМИНА =====
+// ===== ИНЛАЙН-КНОПКИ ДЛЯ АДМИНА =====
+
+// Обработка выбора клиента
+bot.action(/select_client_(.+)/, async (ctx) => {
+    if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
+    
+    const clientId = ctx.match[1];
+    const client = waitingClients.find(c => c.id == clientId);
+    
+    if (!client) {
+        return ctx.answerCbQuery('❌ Клиент не найден');
+    }
+
+    // Сохраняем выбранного клиента
+    adminState.selectedUser = clientId;
+    
+    // Удаляем клиента из списка ожидания
+    waitingClients = waitingClients.filter(c => c.id != clientId);
+    
+    // Обновляем сообщение с кнопками
+    await ctx.editMessageText(
+        `✅ Вы выбрали: ${client.name} (${client.username})\n\n💬 Теперь все ваши сообщения будут отправляться этому клиенту.\n\nДля завершения диалога нажмите кнопку ниже:`,
+        Markup.inlineKeyboard([
+            [Markup.button.callback('❌ Завершить диалог', `end_dialog_${clientId}`)]
+        ])
+    );
+    
+    // Уведомляем клиента
+    await bot.telegram.sendMessage(clientId, "👨‍💼 Сотрудник на связи! Можете задавать вопросы.", userKeyboard);
+    
+    ctx.answerCbQuery(`✅ Диалог с ${client.name}`);
+});
+
+// Обработка завершения диалога
+bot.action(/end_dialog_(.+)/, async (ctx) => {
+    if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
+    
+    const clientId = ctx.match[1];
+    const client = waitingClients.find(c => c.id == clientId) || 
+                   (adminState.selectedUser == clientId ? {name: 'Клиент'} : null);
+    
+    if (!client) {
+        return ctx.answerCbQuery('❌ Клиент не найден');
+    }
+
+    // Сбрасываем состояние
+    adminState.selectedUser = null;
+    waitingClients = waitingClients.filter(c => c.id != clientId);
+    
+    // Обновляем сообщение
+    await ctx.editMessageText(
+        `✅ Диалог с ${client.name} завершен`,
+        Markup.inlineKeyboard([])
+    );
+    
+    // Уведомляем клиента
+    try {
+        await bot.telegram.sendMessage(
+            clientId, 
+            "💬 Диалог с сотрудником завершен. Если нужна помощь - нажмите '📞 Обратная связь'", 
+            userKeyboard
+        );
+    } catch (error) {
+        // Игнорируем если клиент заблокировал бота
+    }
+    
+    ctx.answerCbQuery('✅ Диалог завершен');
+});
+
+// ===== ОБРАБОТКА СООБЩЕНИЙ =====
+
+// Сообщения от клиентов пересылаем админу
+bot.on('text', async (ctx) => {
+    if (ctx.from.id.toString() === ADMIN_CHAT_ID) return;
+    
+    const userText = ctx.message.text;
+    const userId = ctx.from.id;
+    const userName = ctx.from.first_name || 'Клиент';
+    
+    // Если это не кнопка главного меню
+    if (!['🚚 Доставка', '🔄 Возврат', '📦 Каталог', '🏢 О бренде', '📞 Обратная связь'].includes(userText)) {
+        
+        // Если клиент в списке ожидания
+        if (waitingClients.find(c => c.id === userId)) {
+            // Создаем кнопки для ответа
+            const buttons = [[
+                Markup.button.callback(`💬 Ответить ${userName}`, `select_client_${userId}`)
+            ]];
+            
+            await bot.telegram.sendMessage(
+                ADMIN_CHAT_ID, 
+                `📨 ${userName}:\n${userText}`,
+                Markup.inlineKeyboard(buttons)
+            );
+        }
+        // Если админ в диалоге с этим клиентом
+        else if (adminState.selectedUser == userId) {
+            await bot.telegram.sendMessage(
+                ADMIN_CHAT_ID, 
+                `👤 ${userName}:\n${userText}`,
+                Markup.inlineKeyboard([
+                    [Markup.button.callback('❌ Завершить диалог', `end_dialog_${userId}`)]
+                ])
+            );
+        }
+    }
+});
+
+// Сообщения от админа пересылаем клиенту
+bot.on('text', async (ctx) => {
+    if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
+    
+    const adminText = ctx.message.text;
+    
+    // Если админ пишет сообщение и есть выбранный клиент
+    if (adminState.selectedUser && !['📋 Список клиентов', '💬 Ответить клиенту', '❌ Завершить диалог'].includes(adminText)) {
+        try {
+            await bot.telegram.sendMessage(
+                adminState.selectedUser, 
+                `👨‍💼 Сотрудник:\n${adminText}`,
+                userKeyboard
+            );
+            ctx.reply("✅ Сообщение отправлено");
+        } catch (error) {
+            ctx.reply("❌ Ошибка отправки. Клиент заблокировал бота.");
+            adminState.selectedUser = null;
+        }
+    }
+});
+
+// ===== КОМАНДЫ АДМИНА =====
 bot.command('admin', (ctx) => {
     if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
     
-    let message = `👨‍💼 Админ-панель\n⏳ Клиентов: ${waitingClients.length}`;
-    if (currentDialog) message += `\n💬 В диалоге с: ${currentDialog.name}`;
+    if (waitingClients.length === 0) {
+        ctx.reply("📭 Нет клиентов в ожидании", adminKeyboard);
+        return;
+    }
     
-    ctx.reply(message, adminKeyboard);
+    // Создаем кнопки для всех клиентов
+    const buttons = waitingClients.map(client => 
+        [Markup.button.callback(
+            `👤 ${client.name} (${client.username})`, 
+            `select_client_${client.id}`
+        )]
+    );
+    
+    ctx.reply(
+        `📋 Клиенты в ожидании: ${waitingClients.length}\n\nВыберите клиента:`,
+        Markup.inlineKeyboard(buttons)
+    );
 });
 
+// Кнопка "Список клиентов"
 bot.hears('📋 Список клиентов', (ctx) => {
     if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
     
     if (waitingClients.length === 0) {
-        ctx.reply("📭 Нет клиентов", adminKeyboard);
+        ctx.reply("📭 Нет клиентов в ожидании", adminKeyboard);
         return;
     }
     
-    let message = "📋 Клиенты:\n";
-    waitingClients.forEach((client, index) => {
-        message += `${index + 1}. ${client.name}\n`;
-    });
+    const buttons = waitingClients.map(client => 
+        [Markup.button.callback(
+            `👤 ${client.name} (${client.username})`, 
+            `select_client_${client.id}`
+        )]
+    );
     
-    ctx.reply(message, adminKeyboard);
+    ctx.reply(
+        `📋 Клиенты в ожидании: ${waitingClients.length}\n\nВыберите клиента:`,
+        Markup.inlineKeyboard(buttons)
+    );
 });
 
-bot.hears('💬 Ответить клиенту', async (ctx) => {
-    if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
-    
-    if (waitingClients.length === 0) {
-        ctx.reply("📭 Нет клиентов", adminKeyboard);
-        return;
-    }
-    
-    const client = waitingClients[0];
-    currentDialog = client;
-    waitingClients = waitingClients.filter(c => c.id !== client.id);
-    
-    await ctx.reply(`💬 Диалог с ${client.name}`, adminKeyboard);
-    
-    try {
-        await bot.telegram.sendMessage(client.id, "👨‍💼 Сотрудник на связи!", userKeyboard);
-    } catch (error) {
-        ctx.reply("❌ Клиент заблокировал бота");
-        currentDialog = null;
-    }
-});
-
-bot.hears('❌ Завершить диалог', (ctx) => {
-    if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
-    
-    if (!currentDialog) {
-        ctx.reply("❌ Не в диалоге", adminKeyboard);
-        return;
-    }
-    
-    ctx.reply(`✅ Диалог с ${currentDialog.name} завершен`, adminKeyboard);
-    currentDialog = null;
-});
-
-// Пересылка сообщений
-bot.on('text', async (ctx) => {
-    // Админ пишет клиенту
-    if (ctx.from.id.toString() === ADMIN_CHAT_ID && currentDialog) {
-        const text = ctx.message.text;
-        if (!['📋 Список клиентов', '💬 Ответить клиенту', '❌ Завершить диалог'].includes(text)) {
-            try {
-                await bot.telegram.sendMessage(currentDialog.id, `👨‍💼 ${text}`, userKeyboard);
-                ctx.reply("✅ Отправлено");
-            } catch (error) {
-                ctx.reply("❌ Ошибка отправки");
-                currentDialog = null;
-            }
-        }
-        return;
-    }
-    
-    // Клиент пишет админу
-    if (ctx.from.id.toString() !== ADMIN_CHAT_ID) {
-        const text = ctx.message.text;
-        if (!['🚚 Доставка', '🔄 Возврат', '📦 Каталог', '🏢 О бренде', '📞 Обратная связь'].includes(text)) {
-            try {
-                await bot.telegram.sendMessage(ADMIN_CHAT_ID, `📨 ${ctx.from.first_name}: ${text}`, adminKeyboard);
-            } catch (error) {
-                console.log('❌ Ошибка пересылки:', error.message);
-            }
-        }
-    }
-});
-
-// ===== ЗАПУСК БОТА =====
-console.log('🚀 Запускаю бота...');
-
+// ===== ЗАПУСК =====
 bot.launch().then(() => {
-    console.log('🎉 🤖 БОТ УСПЕШНО ЗАПУЩЕН!');
-    console.log('👉 Тестируй в Telegram');
+    console.log('🤖 Бот запущен!');
 }).catch((error) => {
-    console.log('💥 КРИТИЧЕСКАЯ ОШИБКА ЗАПУСКА:');
-    console.log('Сообщение:', error.message);
-    console.log('Стек:', error.stack);
-    process.exit(1);
+    console.log('❌ Ошибка:', error.message);
 });
 
-// ===== EXPRESS СЕРВЕР =====
-app.get('/', (req, res) => {
-    res.send('✅ Бот работает!');
-});
-
-app.listen(PORT, () => {
-    console.log(`🌐 Сервер запущен на порту ${PORT}`);
-});
-
-console.log('✅ Всё инициализировано, ждём запуска бота...');
+app.get('/', (req, res) => res.send('✅ Бот работает'));
+app.listen(PORT, () => console.log(`🚀 Сервер на порту ${PORT}`));
