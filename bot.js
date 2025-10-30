@@ -14,7 +14,6 @@ const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
 
 // ===== ХРАНИЛИЩЕ АКТИВНЫХ ЗАПРОСОВ =====
 const activeRequests = new Map(); // userId -> {userName, chatId, history}
-let selectedUserForReply = null; // Для хранения выбранного пользователя
 
 // ===== ИНФОРМАЦИЯ О БРЕНДЕ =====
 const BRAND_INFO = {
@@ -35,13 +34,8 @@ const userKeyboard = Markup.keyboard([
 
 // Клавиатура для админа (тебя)
 const adminKeyboard = Markup.keyboard([
-  ['📋 Список запросов'],
-  ['🔄 Обновить список']
-]).resize();
-
-const replyKeyboard = Markup.keyboard([
-  ['↩️ Назад к списку'],
-  ['❌ Завершить диалог']
+  ['✅ Ответить клиенту', '❌ Завершить диалог'],
+  ['📞 Позвонить клиенту', '📋 История запросов']
 ]).resize();
 
 // ===== УМНЫЕ ОТВЕТЫ =====
@@ -103,65 +97,11 @@ bot.command('admin', (ctx) => {
     return ctx.reply('Эта команда только для администратора.');
   }
   
-  showRequestsList(ctx);
-});
-
-// ===== ПОКАЗАТЬ СПИСОК ЗАПРОСОВ =====
-function showRequestsList(ctx) {
   const activeCount = activeRequests.size;
-  
-  if (activeCount === 0) {
-    return ctx.reply(
-      '📭 Активных запросов нет\n\nНажмите "🔄 Обновить список" для проверки новых запросов.',
-      adminKeyboard
-    );
-  }
-  
-  let requestsList = `📋 Активные запросы: ${activeCount}\n\n`;
-  let counter = 1;
-  
-  activeRequests.forEach((request, userId) => {
-    requestsList += `${counter}. 👤 ${request.userName}\n`;
-    requestsList += `   🆔 ID: \`${userId}\`\n`;
-    requestsList += `   💬 Сообщений: ${request.history.length}\n`;
-    requestsList += `   ⏰ Запрос: ${new Date(request.timestamp).toLocaleTimeString('ru-RU')}\n`;
-    requestsList += `   ✉️ Ответить: /reply_${userId}\n\n`;
-    counter++;
-  });
-  
-  requestsList += '💡 Чтобы ответить, нажмите на команду /reply_ID выше или используйте кнопки';
-  
-  ctx.reply(requestsList, {
-    parse_mode: 'Markdown',
-    ...adminKeyboard
-  });
-}
-
-// ===== ОБРАБОТКА КНОПОК АДМИНА =====
-bot.action(/reply_(.+)/, async (ctx) => {
-  if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
-  
-  const userId = ctx.match[1];
-  if (activeRequests.has(userId)) {
-    selectedUserForReply = userId;
-    const request = activeRequests.get(userId);
-    
-    let historyText = '📝 История диалога:\n\n';
-    request.history.forEach((msg, index) => {
-      historyText += `${index + 1}. ❓ ${msg.question}\n`;
-      historyText += `   💡 ${msg.answer}\n\n`;
-    });
-    
-    await ctx.reply(
-      `💬 Диалог с: ${request.userName}\n🆔 ID: \`${userId}\`\n\n${historyText}\n📝 Напишите сообщение для ответа:`,
-      { 
-        parse_mode: 'Markdown',
-        ...replyKeyboard 
-      }
-    );
-    
-    await ctx.answerCbQuery();
-  }
+  ctx.reply(
+    `👨‍💼 Панель администратора\n\nАктивные запросы: ${activeCount}\n\nИспользуйте кнопки ниже для управления:`,
+    adminKeyboard
+  );
 });
 
 // ===== ОБРАБОТКА СООБЩЕНИЙ ОТ ПОЛЬЗОВАТЕЛЕЙ =====
@@ -171,100 +111,79 @@ bot.on('text', async (ctx) => {
   const userName = ctx.from.first_name || 'Пользователь';
   const chatId = ctx.chat.id;
 
-  // === СООБЩЕНИЯ ОТ АДМИНА ===
-  if (userId.toString() === ADMIN_CHAT_ID) {
+  // Если это админ и есть активный диалог
+  if (userId.toString() === ADMIN_CHAT_ID && userText.startsWith('/answer_')) {
+    const targetUserId = userText.split('_')[1];
+    const message = userText.split('_').slice(2).join('_');
     
-    // Кнопка "Список запросов"
-    if (userText === '📋 Список запросов' || userText === '🔄 Обновить список') {
-      showRequestsList(ctx);
-      return;
-    }
-    
-    // Кнопка "Назад к списку"
-    if (userText === '↩️ Назад к списку') {
-      selectedUserForReply = null;
-      showRequestsList(ctx);
-      return;
-    }
-    
-    // Кнопка "Завершить диалог"
-    if (userText === '❌ Завершить диалог' && selectedUserForReply) {
-      if (activeRequests.has(selectedUserForReply)) {
-        const userName = activeRequests.get(selectedUserForReply).userName;
-        activeRequests.delete(selectedUserForReply);
-        selectedUserForReply = null;
-        
-        await ctx.reply(`✅ Диалог с ${userName} завершен`, adminKeyboard);
-        showRequestsList(ctx);
-      }
-      return;
-    }
-    
-    // Ответ пользователю (если выбран пользователь)
-    if (selectedUserForReply && activeRequests.has(selectedUserForReply)) {
-      const request = activeRequests.get(selectedUserForReply);
-      
+    if (activeRequests.has(targetUserId)) {
       try {
-        // Отправляем сообщение пользователю
-        await bot.telegram.sendMessage(
-          selectedUserForReply, 
-          `👨‍💼 Ответ от сотрудника:\n\n${userText}`,
-          userKeyboard
-        );
-        
-        // Сохраняем в историю
-        request.history.push({
-          question: `Ответ сотрудника`,
-          answer: userText,
-          timestamp: Date.now()
-        });
-        
-        await ctx.reply(`✅ Ответ отправлен ${request.userName}`, replyKeyboard);
-        
+        await bot.telegram.sendMessage(targetUserId, `👨‍💼 Ответ от сотрудника:\n\n${message}`, userKeyboard);
+        await ctx.reply(`✅ Ответ отправлен пользователю`, adminKeyboard);
       } catch (error) {
-        await ctx.reply('❌ Не удалось отправить сообщение. Пользователь, возможно, заблокировал бота.', replyKeyboard);
+        await ctx.reply('❌ Не удалось отправить сообщение. Пользователь, возможно, заблокировал бота.', adminKeyboard);
       }
+    }
+    return;
+  }
+
+  // Если админ отвечает через кнопку
+  if (userId.toString() === ADMIN_CHAT_ID && activeRequests.size > 0) {
+    if (userText === '📋 История запросов') {
+      let requestsList = '📋 Активные запросы:\n\n';
+      activeRequests.forEach((request, id) => {
+        requestsList += `👤 ${request.userName} (ID: ${id})\n`;
+        requestsList += `💬 История: ${request.history.length} сообщений\n`;
+        requestsList += `⏰ Время: ${new Date().toLocaleTimeString()}\n`;
+        requestsList += `📝 Ответить: /answer_${id}_ваш_текст\n\n`;
+      });
+      await ctx.reply(requestsList, adminKeyboard);
       return;
     }
     
-    // Если админ пишет что-то без выбранного пользователя
-    if (!selectedUserForReply) {
+    if (userText === '❌ Завершить диалог') {
+      // Здесь можно добавить логику завершения диалогов
+      await ctx.reply('Выберите пользователя для завершения диалога:', adminKeyboard);
+      return;
+    }
+    
+    // Если админ пишет обычное сообщение без специальной команды
+    if (!['✅ Ответить клиенту', '❌ Завершить диалог', '📞 Позвонить клиенту', '📋 История запросов'].includes(userText)) {
       await ctx.reply('Используйте кнопки ниже для управления запросами.', adminKeyboard);
     }
     return;
   }
 
-  // === СООБЩЕНИЯ ОТ ОБЫЧНЫХ ПОЛЬЗОВАТЕЛЕЙ ===
-  
   // Если пользователь нажал "Позвать сотрудника"
   if (userText === '👨‍💼 Позвать сотрудника') {
     // Сохраняем запрос
-    activeRequests.set(userId.toString(), {
-      userName: userName,
-      chatId: chatId,
-      history: [],
-      timestamp: Date.now()
-    });
+    if (!activeRequests.has(userId.toString())) {
+      activeRequests.set(userId.toString(), {
+        userName: userName,
+        chatId: chatId,
+        history: [],
+        timestamp: Date.now()
+      });
+    }
 
+    const request = activeRequests.get(userId.toString());
+    
     // Отправляем уведомление админу
     const adminMessage = 
 `🔔 НОВЫЙ ЗАПРОС ОТ КЛИЕНТА!
 
 👤 Имя: ${userName}
-🆔 ID: \`${userId}\`
+🆔 ID: ${userId}
+💬 Chat ID: ${chatId}
 ⏰ Время: ${new Date().toLocaleString('ru-RU')}
 
-💡 ID скопирован для ответа! Используйте кнопку "📋 Список запросов"`;
+📝 Чтобы ответить, используйте:
+/answer_${userId}_ваш_текст
+
+Или нажмите "📋 История запросов" для просмотра всех активных запросов.`;
 
     try {
-      await bot.telegram.sendMessage(
-        ADMIN_CHAT_ID, 
-        adminMessage, 
-        { 
-          parse_mode: 'Markdown',
-          ...adminKeyboard 
-        }
-      );
+      await bot.telegram.sendMessage(ADMIN_CHAT_ID, adminMessage, adminKeyboard);
       await ctx.reply('✅ Сотрудник уже уведомлен! Он свяжется с вами в этом чате в ближайшее время.', userKeyboard);
     } catch (error) {
       await ctx.reply('📞 Позвоните нам: ' + BRAND_INFO.phone, userKeyboard);
